@@ -76,3 +76,20 @@ func (s *state) lineupStats(roster []*espn.Player, a lineup.Assignment) (mean, v
 	}
 	return mean, variance
 }
+
+// currentOutlook projects the lineup exactly as it's set on ESPN now.
+func (s *state) currentOutlook(me *espn.Team) (proj, winProb float64) {
+	cur := lineup.Assignment{Slots: map[int]int{}}
+	for _, p := range me.Roster {
+		cur.Slots[p.ID] = p.LineupSlot
+	}
+	proj, v := s.lineupStats(me.Roster, cur)
+	oppID, ok := s.l.Opponent(me.ID, s.l.CurrentMatchupPeriod)
+	if !ok {
+		return proj, 0
+	}
+	opp := s.l.Team(oppID)
+	oa := lineup.Optimize(s.l, opp.Roster, s.weekScorer(0))
+	om, ov := s.lineupStats(opp.Roster, oa)
+	return proj, analysis.WinProbability(proj, v, om, ov)
+}

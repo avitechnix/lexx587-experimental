@@ -16,10 +16,14 @@ var swidPattern = regexp.MustCompile(`^\{[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-
 
 // runSecrets manages the encrypted vault. Secret values are only ever read
 // from the terminal with echo off and are never printed.
-func runSecrets(sub, path string) error {
+func runSecrets(sub string, args []string, path string) error {
 	switch sub {
 	case "set":
-		return secretsSet(path)
+		which := "espn"
+		if len(args) > 0 {
+			which = args[0]
+		}
+		return secretsSet(path, which)
 	case "check":
 		return secretsCheck(path)
 	case "passwd":
@@ -28,58 +32,82 @@ func runSecrets(sub, path string) error {
 	return fmt.Errorf("unknown secrets command %q (want set, check or passwd)", sub)
 }
 
-func secretsSet(path string) error {
-	var pass []byte
-	var err error
-	if _, statErr := os.Stat(path); statErr == nil {
-		pass, err = secrets.Passphrase()
+// openOrCreate returns the vault passphrase and current values, creating a
+// new (empty) vault passphrase if there's no vault yet.
+func openOrCreate(path string) ([]byte, map[string]secrets.Secret, error) {
+	if _, err := os.Stat(path); err == nil {
+		pass, err := secrets.Passphrase()
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
-		if _, err := secrets.ReadVault(path, pass); err != nil {
+		vals, err := secrets.ReadVault(path, pass)
+		if err != nil {
 			wipe(pass)
-			return err
+			return nil, nil, err
 		}
-	} else {
-		fmt.Fprintln(os.Stderr, "Creating a new encrypted vault at", path)
-		// A service install supplies a generated passphrase (e.g. a systemd
-		// encrypted credential); otherwise ask for one.
-		var ok bool
-		if pass, ok, err = secrets.Unattended(); err != nil {
-			return err
+		return pass, vals, nil
+	}
+	fmt.Fprintln(os.Stderr, "Creating a new encrypted vault at", path)
+	// A service install supplies a generated passphrase (e.g. a systemd
+	// encrypted credential); otherwise ask for one.
+	pass, ok, err := secrets.Unattended()
+	if err != nil {
+		return nil, nil, err
+	}
+	if !ok {
+		if pass, err = secrets.NewPassphrase(); err != nil {
+			return nil, nil, err
 		}
-		if !ok {
-			if pass, err = secrets.NewPassphrase(); err != nil {
-				return err
-			}
-		}
+	}
+	return pass, map[string]secrets.Secret{}, nil
+}
+
+func secretsSet(path, which string) error {
+	if which != "espn" && which != "email" {
+		return fmt.Errorf("secrets set: want 'espn' or 'email', not %q", which)
+	}
+	pass, vals, err := openOrCreate(path)
+	if err != nil {
+		return err
 	}
 	defer wipe(pass)
 
-	fmt.Fprintln(os.Stderr, "Paste values from your browser's espn.com cookies. Input is hidden.")
-	s2, err := secrets.Prompt("espn_s2: ")
-	if err != nil {
-		return err
+	switch which {
+	case "espn":
+		fmt.Fprintln(os.Stderr, "Paste values from your browser's espn.com cookies. Input is hidden.")
+		s2, err := secrets.Prompt("espn_s2: ")
+		if err != nil {
+			return err
+		}
+		defer wipe(s2)
+		swidRaw, err := secrets.Prompt("SWID: ")
+		if err != nil {
+			return err
+		}
+		defer wipe(swidRaw)
+		espnS2 := strings.TrimSpace(string(s2))
+		swid := espn.NormalizeSWID(string(swidRaw))
+		if espnS2 == "" {
+			return errors.New("espn_s2 is empty")
+		}
+		if !swidPattern.MatchString(swid) {
+			return errors.New("SWID doesn't look right; it should look like {XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}")
+		}
+		vals[config.VaultKeyESPNS2], vals[config.VaultKeySWID] = secrets.New(espnS2), secrets.New(swid)
+	case "email":
+		fmt.Fprintln(os.Stderr, "Paste the app password for the agent's email account (for Gmail: myaccount.google.com/apppasswords). Input is hidden.")
+		pw, err := secrets.Prompt("App password: ")
+		if err != nil {
+			return err
+		}
+		defer wipe(pw)
+		v := strings.ReplaceAll(strings.TrimSpace(string(pw)), " ", "") // Gmail shows it in groups of 4
+		if len(v) < 8 {
+			return errors.New("that app password looks too short")
+		}
+		vals[config.VaultKeyEmail] = secrets.New(v)
 	}
-	defer wipe(s2)
-	swidRaw, err := secrets.Prompt("SWID: ")
-	if err != nil {
-		return err
-	}
-	defer wipe(swidRaw)
-
-	espnS2 := strings.TrimSpace(string(s2))
-	swid := espn.NormalizeSWID(string(swidRaw))
-	if espnS2 == "" {
-		return errors.New("espn_s2 is empty")
-	}
-	if !swidPattern.MatchString(swid) {
-		return errors.New("SWID doesn't look right; it should look like {XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}")
-	}
-	data, err := secrets.Seal(pass, map[string]secrets.Secret{
-		config.VaultKeyESPNS2: secrets.New(espnS2),
-		config.VaultKeySWID:   secrets.New(swid),
-	})
+	data, err := secrets.Seal(pass, vals)
 	if err != nil {
 		return err
 	}
@@ -101,12 +129,12 @@ func secretsCheck(path string) error {
 		return err
 	}
 	fmt.Println("Vault decrypts OK:", path)
-	for _, k := range []string{config.VaultKeyESPNS2, config.VaultKeySWID} {
+	for _, k := range []string{config.VaultKeyESPNS2, config.VaultKeySWID, config.VaultKeyEmail} {
 		state := "missing"
 		if v, ok := vals[k]; ok && !v.Empty() {
 			state = "set"
 		}
-		fmt.Printf("  %-8s %s\n", k, state)
+		fmt.Printf("  %-15s %s\n", k, state)
 	}
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/avitechnix/lexx587-experimental/ffagent/internal/espn"
 	"github.com/avitechnix/lexx587-experimental/ffagent/internal/lineup"
@@ -26,25 +27,44 @@ func LineupAction(member secrets.Secret, teamID, week int, moves []lineup.Move) 
 	for _, m := range moves {
 		items = append(items, espn.LineupMove(m.Player.ID, m.From, m.To))
 	}
+	var desc []string
+	for _, m := range moves {
+		desc = append(desc, fmt.Sprintf("%s %s → %s", m.Player.Name, espn.SlotName(m.From), espn.SlotName(m.To)))
+	}
 	return &Action{
 		Kind:    ActLineup,
 		Summary: fmt.Sprintf("Set lineup (%d moves)", len(moves)),
+		Reason:  strings.Join(desc, "; "),
 		Txn:     espn.NewTransaction(member, espn.TxnRoster, teamID, week, items...),
 	}
 }
 
 // Execute submits the plan's transactions to ESPN. Roster moves run first,
 // in order, stopping at the first failure since later moves depend on
-// earlier ones. If any roster move changed who's on the team, the lineup
-// is re-planned from fresh league data before it's submitted.
+// earlier ones. If Confirm is set, each move is shown with its rationale
+// and only runs if confirmed; moves that depend on a declined one are
+// skipped. If the roster changed (or a planned move didn't happen), the
+// lineup is re-planned from fresh league data before it's proposed.
 func (a *Agent) Execute(ctx context.Context, p *Plan, scope Scope, w io.Writer) error {
 	member := espn.NormalizeSWIDSecret(a.Cfg.SWID)
-	rosterChanged := false
+	rosterChanged, plannedMissing := false, false
 	if scope.Roster {
-		for _, act := range p.Actions {
+		done := map[int]bool{}
+		for i, act := range p.Actions {
+			if dep, ok := unmet(act.Depends, done); ok {
+				fmt.Fprintf(w, "– skipped %s: it depends on move %d, which didn't run\n", act.Summary, dep+1)
+				plannedMissing = true
+				continue
+			}
+			if a.Confirm != nil && !a.Confirm(act) {
+				fmt.Fprintf(w, "– declined: %s\n", act.Summary)
+				plannedMissing = true
+				continue
+			}
 			if err := a.submit(ctx, act, w); err != nil {
 				return err
 			}
+			done[i] = true
 			if act.Kind != ActClaim {
 				rosterChanged = true
 			}
@@ -53,7 +73,7 @@ func (a *Agent) Execute(ctx context.Context, p *Plan, scope Scope, w io.Writer) 
 
 	if scope.Lineup {
 		moves := p.Moves
-		if rosterChanged {
+		if rosterChanged || plannedMissing {
 			fresh, err := a.PlanLineup(ctx)
 			if err != nil {
 				return fmt.Errorf("re-planning lineup: %w", err)
@@ -61,8 +81,12 @@ func (a *Agent) Execute(ctx context.Context, p *Plan, scope Scope, w io.Writer) 
 			moves = fresh.Moves
 		}
 		if act := LineupAction(member, p.Me.ID, p.League.CurrentWeek, moves); act != nil {
-			if err := a.submit(ctx, *act, w); err != nil {
-				return err
+			if a.Confirm == nil || a.Confirm(*act) {
+				if err := a.submit(ctx, *act, w); err != nil {
+					return err
+				}
+			} else {
+				fmt.Fprintln(w, "– declined: lineup changes")
 			}
 		} else {
 			fmt.Fprintln(w, "Lineup already optimal; no changes.")
@@ -71,12 +95,26 @@ func (a *Agent) Execute(ctx context.Context, p *Plan, scope Scope, w io.Writer) 
 
 	if scope.Trades {
 		for _, t := range p.Trades {
+			if a.Confirm != nil && !a.Confirm(t.Action) {
+				fmt.Fprintf(w, "– declined: %s\n", t.Action.Summary)
+				continue
+			}
 			if err := a.submit(ctx, t.Action, w); err != nil {
 				fmt.Fprintf(w, "  trade offer failed (continuing): %v\n", err)
 			}
 		}
 	}
 	return nil
+}
+
+// unmet returns the first dependency that hasn't run.
+func unmet(deps []int, done map[int]bool) (int, bool) {
+	for _, d := range deps {
+		if !done[d] {
+			return d, true
+		}
+	}
+	return 0, false
 }
 
 func (a *Agent) submit(ctx context.Context, act Action, w io.Writer) error {

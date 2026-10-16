@@ -15,6 +15,20 @@
   "bench_depth_weight": 0.15,
   "risk_aware": true,
 
+  "approval_mode": "email",
+  "approval_ttl_hours": 12,
+  "declined_cooldown_hours": 24,
+  "email": {
+    "address": "your-ffagent-bot@gmail.com",
+    "notify_to": "you@example.com",
+    "smtp_host": "smtp.gmail.com",
+    "smtp_port": 587,
+    "imap_host": "imap.gmail.com",
+    "imap_port": 993,
+    "digest_hour": 9,
+    "time_zone": "America/New_York"
+  },
+
   "news_fresh_hours": 48,
   "keep_new_pickups_days": 7,
   "max_acquisitions_per_day": 3,

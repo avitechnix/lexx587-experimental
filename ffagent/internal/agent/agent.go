@@ -40,6 +40,9 @@ type Agent struct {
 	RecentlyAcquired map[int]time.Time
 	// OnSubmitted, when set, is called after each transaction ESPN accepts.
 	OnSubmitted func(Action)
+	// Confirm, when set, is asked before each move in Execute; a move only
+	// runs if it returns true.
+	Confirm func(Action) bool
 }
 
 // New returns an agent with default valuation options.
@@ -66,6 +69,36 @@ type Action struct {
 	Summary string
 	Reason  string
 	Txn     *espn.Transaction
+	// Depends lists indexes (in Plan.Actions) of actions this one needs,
+	// e.g. an add into a roster spot freed by an IR move.
+	Depends []int
+}
+
+// Players returns the player IDs a transaction touches.
+func (a Action) Players() []int {
+	var ids []int
+	for _, it := range a.Txn.Items {
+		ids = append(ids, it.PlayerID)
+	}
+	return ids
+}
+
+// Signature identifies an action's effect, to recognize repeat proposals.
+func (a Action) Signature() string {
+	parts := []string{a.Txn.Type}
+	for _, it := range a.Txn.Items {
+		parts = append(parts, fmt.Sprintf("%s:%d:%s:%s:%s:%s", it.Type, it.PlayerID,
+			optInt(it.FromLineupSlotID), optInt(it.ToLineupSlotID), optInt(it.FromTeamID), optInt(it.ToTeamID)))
+	}
+	sort.Strings(parts[1:])
+	return strings.Join(parts, "|")
+}
+
+func optInt(p *int) string {
+	if p == nil {
+		return "-"
+	}
+	return strconv.Itoa(*p)
 }
 
 // Plan is everything the agent decided for this run.
@@ -80,6 +113,10 @@ type Plan struct {
 	Actions  []Action // roster actions (IR, drops, adds, claims), in order
 	Trades   []TradeIdea
 	Warnings []string
+
+	// The lineup as currently set on ESPN, for before/after comparisons.
+	CurrentProjected float64
+	CurrentWinProb   float64
 }
 
 // state is the working context for building a plan.
@@ -93,6 +130,7 @@ type state struct {
 
 	added          map[int]bool   // players acquired this run (never dropped again)
 	irReplacements []*espn.Player // players moved to IR who need replacing
+	freedBy        []int          // indexes of IR moves that opened a roster spot
 	warnings       []string
 }
 
@@ -134,6 +172,7 @@ func (a *Agent) Plan(ctx context.Context) (*Plan, error) {
 	}
 	s.setPool(pool)
 
+	p.CurrentProjected, p.CurrentWinProb = s.currentOutlook(me)
 	work := me.Clone()
 	// Set the risk preference from the current roster first so roster moves
 	// are judged the same way the lineup will be.

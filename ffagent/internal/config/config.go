@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	_ "time/tzdata" // time zones work even on minimal servers
 
 	"github.com/avitechnix/lexx587-experimental/ffagent/internal/secrets"
 )
@@ -20,8 +21,9 @@ type Config struct {
 
 	// Credentials come only from the encrypted vault (see LoadSecrets);
 	// they are never read from the config file or the environment.
-	ESPNS2 secrets.Secret `json:"-"`
-	SWID   secrets.Secret `json:"-"`
+	ESPNS2        secrets.Secret `json:"-"`
+	SWID          secrets.Secret `json:"-"`
+	EmailPassword secrets.Secret `json:"-"`
 
 	// ProtectedPlayers are never dropped or traded (names or ESPN player IDs).
 	ProtectedPlayers []string `json:"protected_players"`
@@ -55,12 +57,51 @@ type Config struct {
 	// FullReplanMinutes forces a full re-plan even without news.
 	FullReplanMinutes int `json:"full_replan_minutes"`
 
+	// Approvals. In "email" mode (the default) the watcher never acts on
+	// its own: it emails each move with its rationale and waits for a reply.
+	// "auto" lets the watcher act without asking.
+	ApprovalMode          string `json:"approval_mode"`
+	ApprovalTTLHours      int    `json:"approval_ttl_hours"`
+	DeclinedCooldownHours int    `json:"declined_cooldown_hours"`
+
+	Email EmailConfig `json:"email"`
+
 	// Trades.
 	MinTradeGain     float64 `json:"min_trade_gain"`
 	TradeTolerance   float64 `json:"trade_tolerance"`
 	MaxTradeIdeas    int     `json:"max_trade_ideas"`
 	ProposeTrades    bool    `json:"propose_trades"`
 	TradeExpiryHours int     `json:"trade_expiry_hours"`
+}
+
+// EmailConfig is where proposals and summaries are sent. The account's app
+// password lives only in the encrypted vault.
+type EmailConfig struct {
+	// Address is the mailbox the agent sends from and reads your replies in.
+	// A dedicated account is recommended.
+	Address string `json:"address"`
+	// NotifyTo is your address. Replies are only accepted from it.
+	NotifyTo   string `json:"notify_to"`
+	SMTPHost   string `json:"smtp_host"`
+	SMTPPort   int    `json:"smtp_port"`
+	IMAPHost   string `json:"imap_host"`
+	IMAPPort   int    `json:"imap_port"`
+	DigestHour int    `json:"digest_hour"` // local hour for the daily summary
+	TimeZone   string `json:"time_zone"`
+}
+
+// Enabled reports whether email is configured.
+func (e EmailConfig) Enabled() bool { return e.Address != "" && e.NotifyTo != "" }
+
+// Location returns the configured time zone (default US Eastern).
+func (e EmailConfig) Location() *time.Location {
+	if loc, err := time.LoadLocation(e.TimeZone); err == nil && e.TimeZone != "" {
+		return loc
+	}
+	if loc, err := time.LoadLocation("America/New_York"); err == nil {
+		return loc
+	}
+	return time.Local
 }
 
 // Default returns the default configuration.
@@ -80,10 +121,18 @@ func Default() Config {
 		MaxAcquisitionsPerDay: 3,
 		WatchIntervalMinutes:  5,
 		FullReplanMinutes:     60,
-		MinTradeGain:          8,
-		TradeTolerance:        3,
-		MaxTradeIdeas:         5,
-		TradeExpiryHours:      48,
+		ApprovalMode:          "email",
+		ApprovalTTLHours:      12,
+		DeclinedCooldownHours: 24,
+		Email: EmailConfig{
+			SMTPHost: "smtp.gmail.com", SMTPPort: 587,
+			IMAPHost: "imap.gmail.com", IMAPPort: 993,
+			DigestHour: 9, TimeZone: "America/New_York",
+		},
+		MinTradeGain:     8,
+		TradeTolerance:   3,
+		MaxTradeIdeas:    5,
+		TradeExpiryHours: 48,
 	}
 }
 
@@ -99,6 +148,7 @@ func defaultSeason(now time.Time) int {
 const (
 	VaultKeyESPNS2 = "espn_s2"
 	VaultKeySWID   = "swid"
+	VaultKeyEmail  = "email_password"
 )
 
 // plaintextKeys are config-file fields and environment variables that would
@@ -107,6 +157,37 @@ var (
 	plaintextKeys = []string{"espn_s2", "swid", "espn_swid", "s2"}
 	plaintextEnv  = []string{"ESPN_S2", "ESPN_SWID", "SWID"}
 )
+
+// secretKey returns the first key anywhere in a JSON document that would
+// hold a credential.
+func secretKey(v any) string {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, child := range t {
+			lk := strings.ToLower(k)
+			for _, bad := range plaintextKeys {
+				if lk == bad {
+					return k
+				}
+			}
+			for _, frag := range []string{"password", "passwd", "secret", "token", "cookie", "app_pass"} {
+				if strings.Contains(lk, frag) {
+					return k
+				}
+			}
+			if k := secretKey(child); k != "" {
+				return k
+			}
+		}
+	case []any:
+		for _, child := range t {
+			if k := secretKey(child); k != "" {
+				return k
+			}
+		}
+	}
+	return ""
+}
 
 // ErrPlaintextSecret is returned when credentials appear in plaintext.
 var ErrPlaintextSecret = fmt.Errorf("config: plaintext credentials are not allowed; store them encrypted with `ffagent secrets set` and remove them")
@@ -127,16 +208,12 @@ func Load(path string) (Config, error) {
 		if err != nil {
 			return c, err
 		}
-		var raw map[string]json.RawMessage
+		var raw any
 		if err := json.Unmarshal(b, &raw); err != nil {
 			return c, fmt.Errorf("config: %s: %w", path, err)
 		}
-		for k := range raw {
-			for _, bad := range plaintextKeys {
-				if strings.EqualFold(k, bad) {
-					return c, fmt.Errorf("%w (found %q in %s)", ErrPlaintextSecret, k, path)
-				}
-			}
+		if k := secretKey(raw); k != "" {
+			return c, fmt.Errorf("%w (found %q in %s)", ErrPlaintextSecret, k, path)
 		}
 		if err := json.Unmarshal(b, &c); err != nil {
 			return c, fmt.Errorf("config: %s: %w", path, err)
@@ -157,6 +234,12 @@ func Load(path string) (Config, error) {
 			return c, err
 		}
 	}
+	switch c.ApprovalMode {
+	case "email", "auto":
+	default:
+		return c, fmt.Errorf(`config: approval_mode must be "email" or "auto"`)
+	}
+	c.Email.NotifyTo = strings.ToLower(strings.TrimSpace(c.Email.NotifyTo))
 	if c.LeagueID == 0 {
 		return c, fmt.Errorf("config: league_id is required (set ESPN_LEAGUE_ID or league_id in the config file)")
 	}
@@ -179,5 +262,6 @@ func (c *Config) LoadSecrets(vaultPath string) error {
 		return err
 	}
 	c.ESPNS2, c.SWID = vals[VaultKeyESPNS2], vals[VaultKeySWID]
+	c.EmailPassword = vals[VaultKeyEmail]
 	return nil
 }

@@ -5,8 +5,8 @@
 #   cd lexx587-experimental/ffagent && sudo ./deploy/install.sh
 #
 # Re-running it updates the binary and unit and keeps your config and vault.
-# Optional environment: LEAGUE_ID, TEAM_ID (skip the prompts),
-# MODE=apply|dry-run (default: ask).
+# Optional environment: LEAGUE_ID, TEAM_ID, AGENT_EMAIL, NOTIFY_EMAIL,
+# TIME_ZONE (skip the prompts), MODE=apply|dry-run (default: ask).
 set -euo pipefail
 
 GO_VERSION=go1.27.2
@@ -96,6 +96,36 @@ if [[ ! -f $ETC/config.json ]]; then
   echo "Wrote $ETC/config.json (edit it to protect players or tune behavior)"
 fi
 
+# --- email for approvals and summaries ------------------------------------------
+email_re='^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
+if grep -q '"notify_to": "you@example.com"' "$ETC/config.json" || ! grep -q '"notify_to"' "$ETC/config.json"; then
+  say "Email: the agent asks before every move"
+  cat <<'TXT'
+The agent emails you each move with its rationale and waits for your reply
+("approve all", "approve 1 3", "decline 2"). It sends from, and reads your
+replies in, a Gmail account of its own. Use a NEW Gmail account just for the
+agent (e.g. yourname.ffagent@gmail.com): its app password grants full access
+to that mailbox, so it shouldn't be your personal one.
+TXT
+  agent_email=${AGENT_EMAIL:-}
+  [[ -n $agent_email ]] || { have_tty && agent_email=$(ask "Agent's Gmail address: "); }
+  [[ $agent_email =~ $email_re ]] || die "not an email address: $agent_email"
+  notify=${NOTIFY_EMAIL:-}
+  [[ -n $notify ]] || { have_tty && notify=$(ask "Your email address (proposals go here; only replies from it count): "); }
+  [[ $notify =~ $email_re ]] || die "not an email address: $notify"
+  tz=${TIME_ZONE:-}
+  [[ -n $tz ]] || { have_tty && tz=$(ask "Your time zone [America/New_York]: "); }
+  tz=${tz:-America/New_York}
+  [[ $tz =~ ^[A-Za-z_]+(/[A-Za-z0-9_+-]+)*$ ]] || die "not a time zone: $tz"
+  if ! grep -q '"email"' "$ETC/config.json"; then
+    die "$ETC/config.json has no \"email\" section; add one (see config.example.json) and re-run"
+  fi
+  sed -i -e "s|\"address\": \"[^\"]*\"|\"address\": \"$agent_email\"|" \
+         -e "s|\"notify_to\": \"[^\"]*\"|\"notify_to\": \"$notify\"|" \
+         -e "s|\"time_zone\": \"[^\"]*\"|\"time_zone\": \"$tz\"|" "$ETC/config.json"
+  NEED_EMAIL_SECRET=1
+fi
+
 # --- vault passphrase: random, never displayed, sealed by systemd -----------------
 if [[ ! -f $CRED ]]; then
   say "Generating the vault passphrase (encrypted with this machine's key; TPM2 if present)"
@@ -124,6 +154,22 @@ TXT
   "$CTL" secrets set </dev/tty || die "storing the cookies failed; re-run: sudo ffagentctl secrets set"
 fi
 
+if [[ -n ${NEED_EMAIL_SECRET:-} ]] || ! "$CTL" secrets check </dev/null 2>/dev/null | grep -q 'email_password  set'; then
+  say "Gmail app password for the agent's account"
+  cat <<'TXT'
+In the agent's Gmail account:
+  1. Turn on 2-Step Verification (myaccount.google.com/security).
+  2. Create an app password at myaccount.google.com/apppasswords
+     (name it "ffagent"). Google shows 16 letters; paste them below.
+It's stored only in the encrypted vault.
+TXT
+  have_tty || die "a terminal is needed to enter the app password; re-run interactively"
+  "$CTL" secrets set email </dev/tty || die "storing the app password failed; re-run: sudo ffagentctl secrets set email"
+fi
+
+say "Sending a test email"
+"$CTL" email-test </dev/null || die "email isn't working yet; fix the issue above, then re-run this installer (or: sudo ffagentctl email-test)"
+
 # --- verify ------------------------------------------------------------------
 say "Checking the connection to your league (read-only)"
 if ! "$CTL" matchup </dev/null; then
@@ -136,9 +182,12 @@ if [[ -z $mode ]]; then
   cur=$(grep -q -- --apply "$ETC/watch.env" && echo apply || echo dry-run)
   if have_tty; then
     echo
-    echo "The watcher can start in dry-run mode (logs what it would do) or apply mode (makes moves)."
-    echo "ESPN's write API is unofficial, so dry-run for a day and review 'sudo ffagentctl logs' is a good first step."
-    r=$(ask "Start in apply mode now? [y/N] (current: $cur): ")
+    echo "Start the watcher in:"
+    echo "  approve mode: it emails you each move with its rationale and runs only the ones"
+    echo "                you approve by replying (nothing happens without your OK), or"
+    echo "  dry-run mode: it only logs what it would propose (sudo ffagentctl logs)."
+    r=$(ask "Start in approve mode now? [Y/n] (current: $cur): ")
+    [[ -z $r ]] && r=y
     [[ $r =~ ^[Yy] ]] && mode=apply || mode=dry-run
   else
     mode=$cur
@@ -154,12 +203,15 @@ systemctl restart ffagent-watch.service
 sleep 2
 systemctl is-active --quiet ffagent-watch.service || { journalctl -u ffagent-watch -n 30 --no-pager; die "the watcher didn't start"; }
 
-say "Done. The watcher is running in $mode mode and starts on boot."
+label=$([[ $mode == apply ]] && echo "approve (emails every move to you first)" || echo "dry-run")
+say "Done. The watcher is running in $label mode and starts on boot."
 cat <<TXT
   sudo ffagentctl logs -f        follow what it sees and does
   sudo ffagentctl status         service status
   sudo ffagentctl analyze        roster report (also: matchup, lineup, waivers, trades)
-  sudo ffagentctl mode apply     let it make moves (or: mode dry-run)
+  sudo ffagentctl mode apply     email you moves to approve (or: mode dry-run)
+  sudo ffagentctl email-test     check email sending and reply reading
   sudo ffagentctl secrets set    refresh the ESPN cookies when they expire
+  sudo ffagentctl secrets set email   replace the Gmail app password
   sudo $SRC/deploy/uninstall.sh  remove everything
 TXT

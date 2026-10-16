@@ -41,3 +41,12 @@ func TestExampleConfigIsAccepted(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRejectsNestedEmailPassword(t *testing.T) {
+	t.Setenv("ESPN_LEAGUE_ID", "1")
+	p := filepath.Join(t.TempDir(), "c.json")
+	os.WriteFile(p, []byte(`{"league_id": 1, "email": {"address": "a@b.c", "app_password": "abcd efgh"}}`), 0o600)
+	if _, err := Load(p); !errors.Is(err, ErrPlaintextSecret) {
+		t.Fatalf("nested password accepted: %v", err)
+	}
+}

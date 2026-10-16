@@ -48,6 +48,7 @@ func handcuffLeague() (*fakeESPN, *espn.Player, *espn.Player) {
 func TestWatchGrabsBackupWhenStarterRuledOut(t *testing.T) {
 	f, star, backup := handcuffLeague()
 	a := testAgent(f)
+	a.Cfg.ApprovalMode = "auto"
 	now := a.Now()
 	nf := &fakeNews{reports: map[int]news.Report{
 		star.ID: {PlayerID: star.ID, Name: star.Name, ProTeamID: starTeam, Position: "RB", Status: espn.InjuryQuestionable, Date: now.Add(-24 * time.Hour)},
@@ -93,6 +94,7 @@ func TestWatchGrabsBackupWhenStarterRuledOut(t *testing.T) {
 func TestStaleInjuryNewsDoesNotBoost(t *testing.T) {
 	f, star, backup := handcuffLeague()
 	a := testAgent(f)
+	a.Cfg.ApprovalMode = "auto"
 	a.Injuries = nil
 	nf := &fakeNews{reports: map[int]news.Report{
 		// Out for days: ESPN's projections already reflect it.
@@ -110,6 +112,7 @@ func TestStaleInjuryNewsDoesNotBoost(t *testing.T) {
 func TestDailyCapStopsPickups(t *testing.T) {
 	f, star, backup := handcuffLeague()
 	a := testAgent(f)
+	a.Cfg.ApprovalMode = "auto"
 	a.Cfg.MaxAcquisitionsPerDay = 0
 	nf := &fakeNews{reports: map[int]news.Report{
 		star.ID: {PlayerID: star.ID, ProTeamID: starTeam, Position: "RB", Status: espn.InjuryOut, Date: a.Now().Add(-time.Hour)},
@@ -126,6 +129,7 @@ func TestDailyCapStopsPickups(t *testing.T) {
 func TestRecentPickupsAreNotDropped(t *testing.T) {
 	f, _ := scenario()
 	a := testAgent(f)
+	a.Cfg.ApprovalMode = "auto"
 	p0, _ := a.Plan(context.Background())
 	// Protect whoever the agent would drop for the kicker claim.
 	var dropped int
@@ -165,6 +169,7 @@ func countAdds(f *fakeESPN, id int) int {
 func TestReturningPlayerOpensNoOpportunity(t *testing.T) {
 	f, star, backup := handcuffLeague()
 	a := testAgent(f)
+	a.Cfg.ApprovalMode = "auto"
 	nf := &fakeNews{reports: map[int]news.Report{
 		// Designated to return from IR: the backup's role is shrinking, not growing.
 		star.ID: {PlayerID: star.ID, ProTeamID: starTeam, Position: "RB", Status: espn.InjuryReserve, Returning: true, Date: a.Now().Add(-time.Hour)},
@@ -183,6 +188,7 @@ func TestNewsStatusDoesNotDriveIRMoves(t *testing.T) {
 	// ESPN Fantasy still lists this RB as active; the injury report says OUT.
 	rb := me.Roster[2]
 	a := testAgent(f)
+	a.Cfg.ApprovalMode = "auto"
 	a.Injuries = map[int]analysis.Injury{rb.ID: {PlayerID: rb.ID, ProTeamID: rb.ProTeamID, Status: espn.InjuryOut, Date: a.Now().Add(-time.Hour)}}
 	p, err := a.Plan(context.Background())
 	if err != nil {

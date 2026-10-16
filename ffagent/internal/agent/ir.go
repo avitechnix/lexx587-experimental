@@ -37,7 +37,12 @@ func (s *state) planIR(t *espn.Team) []Action {
 			})
 			t.Remove(d.ID)
 		}
+		var deps []int
+		if n := len(acts); n > 0 && acts[n-1].Kind == ActDrop {
+			deps = []int{n - 1}
+		}
 		acts = append(acts, Action{
+			Depends: deps,
 			Kind:    ActIRActivate,
 			Summary: fmt.Sprintf("Activate %s (%s) from IR to bench", p.Name, p.Position),
 			Reason:  fmt.Sprintf("status is %s, no longer IR-eligible", p.InjuryStatus),
@@ -63,6 +68,9 @@ func (s *state) planIR(t *espn.Team) []Action {
 			continue
 		}
 		used++
+		if activeCount(t) >= s.l.RosterSize() {
+			s.freedBy = append(s.freedBy, len(acts)) // a full roster gains a spot
+		}
 		acts = append(acts, Action{
 			Kind:    ActIRStash,
 			Summary: fmt.Sprintf("Move %s (%s) from %s to IR", p.Name, p.Position, espn.SlotName(p.LineupSlot)),

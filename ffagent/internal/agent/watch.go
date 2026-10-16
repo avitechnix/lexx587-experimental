@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/avitechnix/lexx587-experimental/ffagent/internal/analysis"
+	"github.com/avitechnix/lexx587-experimental/ffagent/internal/approval"
 	"github.com/avitechnix/lexx587-experimental/ffagent/internal/espn"
 	"github.com/avitechnix/lexx587-experimental/ffagent/internal/news"
 )
@@ -56,11 +57,21 @@ type Watcher struct {
 	Apply     bool
 	Out       io.Writer
 
-	state    WatchState
-	loaded   bool
-	lastFull time.Time
-	perRun   int
+	// Mailer and ApprovalsPath are used in "email" approval mode: moves are
+	// proposed by email and only run once you approve them.
+	Mailer        Mailer
+	ApprovalsPath string
+
+	state     WatchState
+	approvals *approval.Store
+	loaded    bool
+	lastFull  time.Time
+	lastNews  time.Time
+	perRun    int
 }
+
+// emailApprovals reports whether moves wait for an emailed OK.
+func (w *Watcher) emailApprovals() bool { return w.Agent.Cfg.ApprovalMode != "auto" }
 
 // DefaultStatePath is <user config dir>/ffagent/watch-state.json.
 func DefaultStatePath() string {
@@ -71,22 +82,32 @@ func DefaultStatePath() string {
 	return filepath.Join(dir, "ffagent", "watch-state.json")
 }
 
-// Run ticks until the context is cancelled.
+// Run checks the news every interval and, in email approval mode, checks
+// for your replies every minute, until the context is cancelled.
 func (w *Watcher) Run(ctx context.Context, every time.Duration) error {
 	if every < time.Minute {
 		every = time.Minute // be polite to ESPN
 	}
-	for {
-		if err := w.Tick(ctx); err != nil {
-			if errors.Is(err, context.Canceled) {
-				return nil
-			}
+	if w.Apply && w.emailApprovals() && w.Mailer == nil {
+		return errors.New("email approvals are on but email isn't set up; configure \"email\" in the config and run `ffagent secrets set email` (or set approval_mode to \"auto\")")
+	}
+	report := func(err error) {
+		if err != nil && !errors.Is(err, context.Canceled) {
 			fmt.Fprintf(w.Out, "%s  error: %v\n", stamp(w.Agent.Now()), err)
+		}
+	}
+	for {
+		if w.Apply && w.emailApprovals() {
+			report(w.TickApprovals(ctx))
+		}
+		if w.lastNews.IsZero() || w.Agent.Now().Sub(w.lastNews) >= every || w.lastFull.IsZero() {
+			w.lastNews = w.Agent.Now()
+			report(w.Tick(ctx))
 		}
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(every):
+		case <-time.After(time.Minute):
 		}
 	}
 }
@@ -94,11 +115,8 @@ func (w *Watcher) Run(ctx context.Context, every time.Duration) error {
 // Tick checks the news once and, if anything relevant changed (or a full
 // re-plan is due), plans and executes roster moves and the lineup.
 func (w *Watcher) Tick(ctx context.Context) error {
-	if !w.loaded {
-		if err := w.load(); err != nil {
-			return err
-		}
-		w.perRun = w.Agent.Cfg.MaxAcquisitionsPerRun
+	if err := w.ensureLoaded(); err != nil {
+		return err
 	}
 	now := w.Agent.Now()
 	reports, err := w.News.Injuries(ctx)
@@ -177,6 +195,9 @@ func (w *Watcher) act(ctx context.Context, now time.Time, fresh []news.Article) 
 	if !w.Apply {
 		fmt.Fprintf(w.Out, "%s  dry run (use --apply to act)\n", stamp(now))
 		return nil
+	}
+	if w.emailApprovals() {
+		return w.propose(ctx, p, now)
 	}
 
 	a.OnSubmitted = func(act Action) {
@@ -291,11 +312,22 @@ func (w *Watcher) load() error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	if w.ApprovalsPath == "" {
+		w.ApprovalsPath = filepath.Join(filepath.Dir(w.StatePath), "approvals.json")
+	}
+	if w.approvals, err = approval.Load(w.ApprovalsPath); err != nil {
+		return fmt.Errorf("approvals %s: %w", w.ApprovalsPath, err)
+	}
 	w.loaded = true
 	return nil
 }
 
 func (w *Watcher) save() error {
+	if w.approvals != nil {
+		if err := w.approvals.Save(w.Agent.Now()); err != nil {
+			return err
+		}
+	}
 	// Keep 30 days of acquisitions for the anti-churn window.
 	now := w.Agent.Now()
 	kept := w.state.Acquisitions[:0]

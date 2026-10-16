@@ -87,6 +87,6 @@ func ApplyOpportunity(l *espn.League, players []*espn.Player, vals map[int]*Valu
 			next.WeekProjection += gain * next.InjuryFactor
 		}
 		next.ROSValue += gain * missed
-		next.Notes = append(next.Notes, fmt.Sprintf("opportunity: %s %s (+%.1f/wk)", hurt.Name, inj.Status, gain))
+		next.Notes = append(next.Notes, fmt.Sprintf("%s is %s, so he's next man up (+%.1f pts/wk)", hurt.Name, inj.Status, gain))
 	}
 }

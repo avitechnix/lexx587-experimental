@@ -34,10 +34,16 @@ A Go agent that manages your ESPN fantasy football team. Each run it:
 
 6. **Watches injury news and moves first.** `ffagent watch` polls ESPN's league-wide
    injury report and NFL headlines every few minutes. When a starter is ruled out, it
-   adds his backup the moment the opening appears, or queues a waiver claim. It also
-   benches the injured starter (see [Injury news and watch mode](#injury-news-and-watch-mode)).
+   immediately proposes adding his backup (or a waiver claim) and benching the injured
+   starter (see [Injury news and watch mode](#injury-news-and-watch-mode)).
+7. **Asks you first.** No move runs without your OK. The watcher emails you every
+   proposed move with its rationale, and runs only the moves you approve by replying.
+   When you run `--apply` yourself, it asks you in the terminal. You also get a daily
+   summary of everything proposed, approved, declined and done (see
+   [Approvals and email](#approvals-and-email)).
 
-Everything is a **dry run by default**. Nothing changes on ESPN unless you pass `--apply`.
+Everything is a **dry run by default**. Nothing changes on ESPN unless you pass
+`--apply`, and even then each move needs your confirmation.
 
 ## Server install (recommended)
 
@@ -61,11 +67,15 @@ The installer:
    the TPM2 chip if the machine has one). You never see or type it; it exists in
    plaintext only inside a pipe at setup time and in systemd's private, in-memory
    credential directory while the service runs.
-6. **Asks you to paste the two ESPN cookies** into hidden prompts.
+6. **Asks you to paste the two ESPN cookies** into hidden prompts, then sets up email:
+   - the agent's Gmail address, your address and your time zone,
+   - the Gmail app password (also a hidden prompt),
+   - a test email, to confirm that sending and reading replies both work.
 7. **Checks it can read your league**, then starts `ffagent watch` as a
    sandboxed service that restarts on failure and on boot. It runs with no
    privileges, a read-only filesystem except its state directory, no core dumps,
-   and network access limited to IP sockets. You choose apply or dry-run mode.
+   and network access limited to IP sockets. You choose approve mode (moves are
+   emailed to you, and only the ones you approve run) or dry-run mode.
 
 Day to day:
 
@@ -205,11 +215,13 @@ Every interval, the watcher:
      covers the expected games missed (IR means at least 4). The agent also searches
      free agents on that NFL team specifically, so a low-owned backup still gets
      found.
-4. **Acts.**
-   - **Free agents** are first come, first served, so the add is submitted on the spot.
-   - **Waiver players** get a claim filed immediately. A claim doesn't beat other
-     managers by speed: ESPN awards waivers by priority or FAAB bid when they process.
-   - **Lineup.** An injured starter is benched in the same pass.
+4. **Asks you.** The proposed moves are emailed to you right away. With
+   `approval_mode: "auto"`, the watcher acts without asking instead.
+   - **Free agents** are first come, first served, so the faster you approve, the
+     better your chance of beating other managers to him.
+   - **Waiver players** get a claim filed once you approve. Waivers aren't won by
+     speed: ESPN awards them by priority or FAAB bid when they process.
+   - **Lineup.** Benching the injured starter is part of the same proposal.
 
 Safeguards:
 
@@ -243,6 +255,59 @@ of the unattended options under [Storing credentials](#storing-credentials-encry
 - `min_trade_gain`, `trade_tolerance`: how good a trade must be for you, and how much
   the partner can lose by the model's measure before the offer is dropped.
 
+## Approvals and email
+
+In `approval_mode: "email"` (the default), nothing happens on ESPN until you approve it.
+
+1. **Proposal.** When the agent finds moves, it emails you one message with them
+   numbered. Each move shows:
+   - what it is,
+   - **why**: the injury or opportunity behind it, projections for the player added
+     and the player dropped, and the change in team value,
+   - which other move it depends on, if any,
+   - when it expires (12 hours, or kickoff for lineup moves).
+
+   The email opens with your win probability as your lineup is set now, and with the
+   moves.
+2. **Your reply.** Reply from any mail app: `approve all`, `yes`, `approve 1 3`,
+   `decline 2`, `approve 1, decline 2`, or `no`. Quoted text and signatures are
+   ignored. If a reply is ambiguous, it counts as a decline.
+3. **Re-check, then run.** The agent checks for replies every minute. Before running
+   an approved move, it re-checks it against fresh league data. A move doesn't run if:
+   - the player was taken or got hurt,
+   - his game has started,
+   - your roster changed, or
+   - a move it depends on was declined.
+
+   You get a reply in the same thread saying what ran and why anything didn't.
+4. **Daily summary.** Each morning (`digest_hour`, your `time_zone`) you get a summary
+   of the last 24 hours: done, declined, expired, not run, and still waiting. It also
+   lists the day's **trade ideas**, which you can approve by replying.
+
+How replies are protected:
+
+- **Sender check.** Only replies from `notify_to` count.
+- **One-time code.** Each email carries a random 80-bit code in its subject, which a
+  normal reply keeps automatically. Someone who never saw the email can't approve
+  anything.
+- **No self-approval.** The agent remembers the IDs of the messages it sent, so it
+  never reads its own email as a reply.
+
+Declined moves aren't proposed again for 24 hours (`declined_cooldown_hours`). Moves
+already waiting aren't sent twice.
+
+**Gmail setup.** Create a separate Gmail account for the agent: its app password
+grants full access to its mailbox, so don't use your personal one. In that account:
+
+1. Turn on 2-Step Verification.
+2. Create an app password at <https://myaccount.google.com/apppasswords>.
+3. Store it with `ffagent secrets set email`. Like the cookies, it's kept only in the
+   encrypted vault.
+
+Then put the agent's address in `email.address` and yours in `email.notify_to`, and
+check everything with `ffagent email-test`. The server installer walks you through all
+of this.
+
 ## Caveats
 
 - **Limits of encryption.** The credentials have to exist in plaintext in memory for
@@ -272,6 +337,8 @@ internal/lineup     exact lineup optimizer (Hungarian assignment)
 internal/agent      IR, pickups, matchup strategy, trades, execution, reports
 internal/config     JSON + env configuration (rejects plaintext credentials)
 internal/news       ESPN injury report and headline feeds
+internal/approval  approval queue, reply parsing, decision history
+internal/mail      SMTP sending and minimal IMAP reply reading (TLS only)
 internal/secrets    encrypted vault, passphrase sources, redacting Secret type
 ```
 
