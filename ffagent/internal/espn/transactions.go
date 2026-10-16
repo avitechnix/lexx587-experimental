@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/avitechnix/lexx587-experimental/ffagent/internal/secrets"
 )
 
 // Transaction types accepted by the ESPN write API.
@@ -35,16 +37,16 @@ type TxnItem struct {
 
 // Transaction is the request body for ESPN's transactions endpoint.
 type Transaction struct {
-	IsLeagueManager bool      `json:"isLeagueManager"`
-	TeamID          int       `json:"teamId"`
-	Type            string    `json:"type"`
-	MemberID        string    `json:"memberId"`
-	ScoringPeriodID int       `json:"scoringPeriodId"`
-	ExecutionType   string    `json:"executionType"`
-	BidAmount       *int      `json:"bidAmount,omitempty"`
-	ExpirationDate  *int64    `json:"expirationDate,omitempty"`
-	Comment         string    `json:"comment,omitempty"`
-	Items           []TxnItem `json:"items"`
+	IsLeagueManager bool           `json:"isLeagueManager"`
+	TeamID          int            `json:"teamId"`
+	Type            string         `json:"type"`
+	MemberID        secrets.Secret `json:"-"` // SWID; added only on the wire
+	ScoringPeriodID int            `json:"scoringPeriodId"`
+	ExecutionType   string         `json:"executionType"`
+	BidAmount       *int           `json:"bidAmount,omitempty"`
+	ExpirationDate  *int64         `json:"expirationDate,omitempty"`
+	Comment         string         `json:"comment,omitempty"`
+	Items           []TxnItem      `json:"items"`
 }
 
 func intp(v int) *int { return &v }
@@ -70,7 +72,7 @@ func TradeItem(playerID, fromTeam, toTeam int) TxnItem {
 }
 
 // NewTransaction returns a transaction submitted by memberID (a SWID).
-func NewTransaction(memberID, kind string, teamID, week int, items ...TxnItem) *Transaction {
+func NewTransaction(memberID secrets.Secret, kind string, teamID, week int, items ...TxnItem) *Transaction {
 	return &Transaction{
 		TeamID:          teamID,
 		Type:            kind,
@@ -82,7 +84,7 @@ func NewTransaction(memberID, kind string, teamID, week int, items ...TxnItem) *
 }
 
 // NewWaiverClaim returns a waiver claim, with a FAAB bid when bid >= 0.
-func NewWaiverClaim(memberID string, teamID, week, bid int, items ...TxnItem) *Transaction {
+func NewWaiverClaim(memberID secrets.Secret, teamID, week, bid int, items ...TxnItem) *Transaction {
 	t := NewTransaction(memberID, TxnWaiver, teamID, week, items...)
 	if bid >= 0 {
 		t.BidAmount = intp(bid)
@@ -91,7 +93,7 @@ func NewWaiverClaim(memberID string, teamID, week, bid int, items ...TxnItem) *T
 }
 
 // NewTradeProposal returns a trade offer that expires at the given time.
-func NewTradeProposal(memberID string, teamID, week int, expires time.Time, items ...TxnItem) *Transaction {
+func NewTradeProposal(memberID secrets.Secret, teamID, week int, expires time.Time, items ...TxnItem) *Transaction {
 	t := NewTransaction(memberID, TxnTrade, teamID, week, items...)
 	exp := expires.UnixMilli()
 	t.ExpirationDate = &exp
@@ -107,12 +109,17 @@ type TransactionResult struct {
 
 // Submit sends a transaction to ESPN. It requires espn_s2 and SWID.
 func (c *Client) Submit(ctx context.Context, t *Transaction) (*TransactionResult, error) {
-	if c.ESPNS2 == "" || c.SWID == "" {
-		return nil, fmt.Errorf("espn: ESPN_S2 and SWID are required to make changes")
+	if c.ESPNS2.Empty() || c.SWID.Empty() {
+		return nil, fmt.Errorf("espn: espn_s2 and SWID are required to make changes (run `ffagent secrets set`)")
 	}
+	// The member ID is only revealed in the request body sent to ESPN.
+	wire := struct {
+		*Transaction
+		MemberID string `json:"memberId"`
+	}{t, t.MemberID.Reveal()}
 	var res TransactionResult
 	u := c.leaguePath(c.WriteBase) + "/transactions/"
-	if err := c.do(ctx, http.MethodPost, u, t, nil, &res); err != nil {
+	if err := c.do(ctx, http.MethodPost, u, wire, nil, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil

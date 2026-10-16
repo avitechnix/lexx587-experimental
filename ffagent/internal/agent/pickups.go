@@ -59,6 +59,10 @@ func (s *state) planPickups(t *espn.Team) []Action {
 		}
 
 		act := s.pickupAction(t, best.add, best.drop, best.gain, &faab)
+		if best.drop == nil && len(s.freedBy) > 0 {
+			act.Depends = []int{s.freedBy[0]} // uses the spot an IR move opened
+			s.freedBy = s.freedBy[1:]
+		}
 		acts = append(acts, act)
 		taken[best.add.ID] = true
 		s.added[best.add.ID] = true
@@ -94,19 +98,22 @@ func (s *state) pickupAction(t *espn.Team, c, d *espn.Player, gain float64, faab
 		items = append(items, espn.DropItem(d.ID, t.ID))
 		summary += fmt.Sprintf(", drop %s (%s)", d.Name, d.Position)
 	}
+	// Lead with the reason in plain words, then the numbers behind it.
 	var why []string
-	why = append(why, fmt.Sprintf("+%.1f team value", gain))
-	why = append(why, fmt.Sprintf("%.1f proj this week, %.1f ROS", v.WeekProjection, v.ROSValue))
-	if d != nil {
-		dv := s.val(d)
-		why = append(why, fmt.Sprintf("vs %.1f / %.1f for %s", dv.WeekProjection, dv.ROSValue, d.Name))
-	} else if r := s.replacementFor(c); r != nil {
-		why = append(why, "replaces "+r.Name+" (IR)")
-	}
 	if len(v.Notes) > 0 {
 		why = append(why, strings.Join(v.Notes, ", "))
 	}
-
+	if d == nil {
+		if r := s.replacementFor(c); r != nil {
+			why = append(why, "replaces "+r.Name+" (IR)")
+		}
+	}
+	proj := fmt.Sprintf("%s projects %.1f pts this week and %.0f rest of season", c.Name, v.WeekProjection, v.ROSValue)
+	if d != nil {
+		dv := s.val(d)
+		proj += fmt.Sprintf(" (vs %.1f and %.0f for %s)", dv.WeekProjection, dv.ROSValue, d.Name)
+	}
+	why = append(why, proj, fmt.Sprintf("team value +%.1f", gain))
 	if c.Status != pendingClaim {
 		return Action{
 			Kind:    ActAdd,

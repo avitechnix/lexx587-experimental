@@ -25,7 +25,8 @@ type Player struct {
 	ProTeamID     int
 	ProTeam       string
 	EligibleSlots []int
-	InjuryStatus  string
+	InjuryStatus  string // ESPN Fantasy's designation; governs IR eligibility
+	NewsStatus    string // fresher designation from the injury report, if any
 	Injured       bool
 	PercentOwned  float64
 	PercentChange float64
@@ -37,6 +38,17 @@ type Player struct {
 	Locked     bool   // game started; lineup slot can't change
 
 	Stats []StatLine
+}
+
+// EffectiveInjury is the best current view of a player's availability:
+// the injury report when it has news, else ESPN Fantasy's status. Use it for
+// projections and lineups; use InjuryStatus for IR eligibility, which ESPN
+// enforces from its own status.
+func (p *Player) EffectiveInjury() string {
+	if p.NewsStatus != "" {
+		return p.NewsStatus
+	}
+	return p.InjuryStatus
 }
 
 // CanPlay reports whether the player is eligible for the given lineup slot.

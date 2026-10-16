@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/avitechnix/lexx587-experimental/ffagent/internal/espn"
 )
@@ -36,7 +37,12 @@ func (s *state) planIR(t *espn.Team) []Action {
 			})
 			t.Remove(d.ID)
 		}
+		var deps []int
+		if n := len(acts); n > 0 && acts[n-1].Kind == ActDrop {
+			deps = []int{n - 1}
+		}
 		acts = append(acts, Action{
+			Depends: deps,
 			Kind:    ActIRActivate,
 			Summary: fmt.Sprintf("Activate %s (%s) from IR to bench", p.Name, p.Position),
 			Reason:  fmt.Sprintf("status is %s, no longer IR-eligible", p.InjuryStatus),
@@ -62,6 +68,9 @@ func (s *state) planIR(t *espn.Team) []Action {
 			continue
 		}
 		used++
+		if activeCount(t) >= s.l.RosterSize() {
+			s.freedBy = append(s.freedBy, len(acts)) // a full roster gains a spot
+		}
 		acts = append(acts, Action{
 			Kind:    ActIRStash,
 			Summary: fmt.Sprintf("Move %s (%s) from %s to IR", p.Name, p.Position, espn.SlotName(p.LineupSlot)),
@@ -83,7 +92,7 @@ func (s *state) droppable(t *espn.Team, exclude ...int) []*espn.Player {
 	var out []*espn.Player
 	for _, p := range t.Roster {
 		if skip[p.ID] || p.LineupSlot == espn.SlotIR || p.Locked || s.protected(p) ||
-			p.Status == pendingClaim || p.Status == pendingDrop || s.added[p.ID] {
+			p.Status == pendingClaim || p.Status == pendingDrop || s.added[p.ID] || s.recentPickup(p) {
 			continue
 		}
 		out = append(out, p)
@@ -113,4 +122,11 @@ func without(roster []*espn.Player, id int) []*espn.Player {
 		}
 	}
 	return out
+}
+
+// recentPickup reports whether the agent acquired the player recently; such
+// players are kept so the agent doesn't churn its own pickups.
+func (s *state) recentPickup(p *espn.Player) bool {
+	at, ok := s.a.RecentlyAcquired[p.ID]
+	return ok && s.a.Now().Sub(at) < time.Duration(s.a.Cfg.KeepNewPickupsDays)*24*time.Hour
 }

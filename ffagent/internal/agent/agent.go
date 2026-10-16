@@ -14,12 +14,13 @@ import (
 	"github.com/avitechnix/lexx587-experimental/ffagent/internal/config"
 	"github.com/avitechnix/lexx587-experimental/ffagent/internal/espn"
 	"github.com/avitechnix/lexx587-experimental/ffagent/internal/lineup"
+	"github.com/avitechnix/lexx587-experimental/ffagent/internal/secrets"
 )
 
 // ESPN is the subset of the ESPN client the agent uses.
 type ESPN interface {
 	FetchLeague(ctx context.Context) (*espn.League, error)
-	FreeAgents(ctx context.Context, l *espn.League, position string, limit int) ([]*espn.Player, error)
+	FreeAgents(ctx context.Context, l *espn.League, position string, proTeams []int, limit int) ([]*espn.Player, error)
 	Submit(ctx context.Context, t *espn.Transaction) (*espn.TransactionResult, error)
 }
 
@@ -29,6 +30,19 @@ type Agent struct {
 	Cfg  config.Config
 	Opts analysis.Options
 	Now  func() time.Time
+
+	// Injuries is the latest injury news (see the news package), keyed by
+	// player ID. It overrides ESPN fantasy statuses, which can lag, and
+	// drives opportunity boosts for the next player up.
+	Injuries map[int]analysis.Injury
+	// RecentlyAcquired holds when the agent picked up each player; players
+	// acquired within KeepNewPickupsDays are never dropped (no churn).
+	RecentlyAcquired map[int]time.Time
+	// OnSubmitted, when set, is called after each transaction ESPN accepts.
+	OnSubmitted func(Action)
+	// Confirm, when set, is asked before each move in Execute; a move only
+	// runs if it returns true.
+	Confirm func(Action) bool
 }
 
 // New returns an agent with default valuation options.
@@ -55,6 +69,36 @@ type Action struct {
 	Summary string
 	Reason  string
 	Txn     *espn.Transaction
+	// Depends lists indexes (in Plan.Actions) of actions this one needs,
+	// e.g. an add into a roster spot freed by an IR move.
+	Depends []int
+}
+
+// Players returns the player IDs a transaction touches.
+func (a Action) Players() []int {
+	var ids []int
+	for _, it := range a.Txn.Items {
+		ids = append(ids, it.PlayerID)
+	}
+	return ids
+}
+
+// Signature identifies an action's effect, to recognize repeat proposals.
+func (a Action) Signature() string {
+	parts := []string{a.Txn.Type}
+	for _, it := range a.Txn.Items {
+		parts = append(parts, fmt.Sprintf("%s:%d:%s:%s:%s:%s", it.Type, it.PlayerID,
+			optInt(it.FromLineupSlotID), optInt(it.ToLineupSlotID), optInt(it.FromTeamID), optInt(it.ToTeamID)))
+	}
+	sort.Strings(parts[1:])
+	return strings.Join(parts, "|")
+}
+
+func optInt(p *int) string {
+	if p == nil {
+		return "-"
+	}
+	return strconv.Itoa(*p)
 }
 
 // Plan is everything the agent decided for this run.
@@ -69,6 +113,10 @@ type Plan struct {
 	Actions  []Action // roster actions (IR, drops, adds, claims), in order
 	Trades   []TradeIdea
 	Warnings []string
+
+	// The lineup as currently set on ESPN, for before/after comparisons.
+	CurrentProjected float64
+	CurrentWinProb   float64
 }
 
 // state is the working context for building a plan.
@@ -82,6 +130,7 @@ type state struct {
 
 	added          map[int]bool   // players acquired this run (never dropped again)
 	irReplacements []*espn.Player // players moved to IR who need replacing
+	freedBy        []int          // indexes of IR moves that opened a roster spot
 	warnings       []string
 }
 
@@ -94,7 +143,7 @@ func (a *Agent) myTeam(l *espn.League) (*espn.Team, error) {
 		}
 		return nil, fmt.Errorf("team %d not found in league %d", a.Cfg.TeamID, l.ID)
 	}
-	if t := l.TeamByOwner(espn.NormalizeSWID(a.Cfg.SWID)); t != nil {
+	if t := l.TeamByOwner(espn.NormalizeSWID(a.Cfg.SWID.Reveal())); t != nil {
 		return t, nil
 	}
 	return nil, fmt.Errorf("couldn't find your team: set team_id (ESPN_TEAM_ID) or a valid SWID")
@@ -116,20 +165,14 @@ func (a *Agent) Plan(ctx context.Context) (*Plan, error) {
 	}
 	p.Me = me
 
-	s := &state{a: a, l: l, me: me, values: map[int]*analysis.Valuation{}, added: map[int]bool{}}
-	for _, t := range l.Teams {
-		for _, pl := range t.Roster {
-			s.values[pl.ID] = analysis.Value(l, pl, a.Opts)
-		}
-	}
-	s.pool, err = a.loadPool(ctx, l)
+	s := a.newState(l, me)
+	pool, err := a.loadPool(ctx, l)
 	if err != nil {
 		p.Warnings = append(p.Warnings, "free agents: "+err.Error())
 	}
-	for _, pl := range s.pool {
-		s.values[pl.ID] = analysis.Value(l, pl, a.Opts)
-	}
+	s.setPool(pool)
 
+	p.CurrentProjected, p.CurrentWinProb = s.currentOutlook(me)
 	work := me.Clone()
 	// Set the risk preference from the current roster first so roster moves
 	// are judged the same way the lineup will be.
@@ -149,20 +192,87 @@ func (a *Agent) Plan(ctx context.Context) (*Plan, error) {
 	return p, nil
 }
 
+// newState values every rostered player, with injury news applied.
+func (a *Agent) newState(l *espn.League, me *espn.Team) *state {
+	s := &state{a: a, l: l, me: me, values: map[int]*analysis.Valuation{}, added: map[int]bool{}}
+	for _, t := range l.Teams {
+		for _, pl := range t.Roster {
+			a.applyNews(pl)
+			s.values[pl.ID] = analysis.Value(l, pl, a.Opts)
+		}
+	}
+	s.applyOpportunity()
+	return s
+}
+
+// setPool adds available players and re-runs opportunity boosts so backups
+// in the pool are credited too.
+func (s *state) setPool(pool []*espn.Player) {
+	s.pool = pool
+	for _, pl := range pool {
+		s.a.applyNews(pl)
+		s.values[pl.ID] = analysis.Value(s.l, pl, s.a.Opts)
+	}
+	// Recompute rostered values so boosts aren't applied twice.
+	for _, t := range s.l.Teams {
+		for _, pl := range t.Roster {
+			s.values[pl.ID] = analysis.Value(s.l, pl, s.a.Opts)
+		}
+	}
+	s.applyOpportunity()
+}
+
+func (s *state) applyOpportunity() {
+	if len(s.a.Injuries) == 0 {
+		return
+	}
+	var all []*espn.Player
+	for _, t := range s.l.Teams {
+		all = append(all, t.Roster...)
+	}
+	all = append(all, s.pool...)
+	fresh := time.Duration(s.a.Cfg.NewsFreshHours) * time.Hour
+	analysis.ApplyOpportunity(s.l, all, s.values, s.a.Injuries, s.a.Now(), fresh)
+}
+
+// applyNews records the injury report's status for valuation. ESPN
+// Fantasy's own status is left alone because it governs IR eligibility, and
+// players designated to return are left to ESPN Fantasy's status.
+func (a *Agent) applyNews(p *espn.Player) {
+	if inj, ok := a.Injuries[p.ID]; ok && inj.Status != "" && !inj.Returning {
+		p.NewsStatus = inj.Status
+	}
+}
+
+// freshInjuryTeams returns NFL teams with a fresh, significant injury.
+func (a *Agent) freshInjuryTeams(l *espn.League) []int {
+	fresh := time.Duration(a.Cfg.NewsFreshHours) * time.Hour
+	seen := map[int]bool{}
+	var teams []int
+	for _, inj := range a.Injuries {
+		if inj.ProTeamID == 0 || inj.Returning || seen[inj.ProTeamID] || a.Now().Sub(inj.Date) > fresh {
+			continue
+		}
+		switch inj.Status {
+		case espn.InjuryOut, espn.InjuryDoubtful, espn.InjuryReserve, espn.InjurySuspension:
+			seen[inj.ProTeamID] = true
+			teams = append(teams, inj.ProTeamID)
+		}
+	}
+	sort.Ints(teams)
+	return teams
+}
+
 func (a *Agent) loadPool(ctx context.Context, l *espn.League) ([]*espn.Player, error) {
 	seen := map[int]bool{}
 	var out []*espn.Player
 	var firstErr error
-	for pos := range espn.PositionSlot {
-		if l.LineupSlotCounts[espn.PositionSlot[pos]] == 0 && !flexEligible(l, pos) {
-			continue // league doesn't start this position
-		}
-		ps, err := a.ESPN.FreeAgents(ctx, l, pos, a.Cfg.FreeAgentsPerPosition)
+	add := func(ps []*espn.Player, err error) {
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
-			continue
+			return
 		}
 		for _, p := range ps {
 			if !seen[p.ID] && p.OnTeamID == 0 {
@@ -170,6 +280,17 @@ func (a *Agent) loadPool(ctx context.Context, l *espn.League) ([]*espn.Player, e
 				out = append(out, p)
 			}
 		}
+	}
+	for pos := range espn.PositionSlot {
+		if l.LineupSlotCounts[espn.PositionSlot[pos]] == 0 && !flexEligible(l, pos) {
+			continue // league doesn't start this position
+		}
+		add(a.ESPN.FreeAgents(ctx, l, pos, nil, a.Cfg.FreeAgentsPerPosition))
+	}
+	// Backups behind freshly injured starters may not be widely owned yet,
+	// which is exactly when they're worth grabbing.
+	if teams := a.freshInjuryTeams(l); len(teams) > 0 {
+		add(a.ESPN.FreeAgents(ctx, l, "", teams, 50))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID }) // deterministic ties
 	return out, firstErr
@@ -292,4 +413,4 @@ func activeCount(t *espn.Team) int {
 	return n
 }
 
-func (s *state) member() string { return espn.NormalizeSWID(s.a.Cfg.SWID) }
+func (s *state) member() secrets.Secret { return espn.NormalizeSWIDSecret(s.a.Cfg.SWID) }

@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/avitechnix/lexx587-experimental/ffagent/internal/secrets"
 )
 
 const (
@@ -24,8 +26,8 @@ const (
 type Client struct {
 	LeagueID  int
 	Season    int
-	ESPNS2    string // espn_s2 cookie (required for private leagues and writes)
-	SWID      string // SWID cookie, including braces
+	ESPNS2    secrets.Secret // espn_s2 cookie (required for private leagues and writes)
+	SWID      secrets.Secret // SWID cookie, including braces
 	ReadBase  string
 	WriteBase string
 	HTTP      *http.Client
@@ -33,12 +35,12 @@ type Client struct {
 }
 
 // NewClient returns a client with default endpoints.
-func NewClient(leagueID, season int, espnS2, swid string) *Client {
+func NewClient(leagueID, season int, espnS2, swid secrets.Secret) *Client {
 	return &Client{
 		LeagueID:  leagueID,
 		Season:    season,
 		ESPNS2:    espnS2,
-		SWID:      NormalizeSWID(swid),
+		SWID:      NormalizeSWIDSecret(swid),
 		ReadBase:  DefaultReadBase,
 		WriteBase: DefaultWriteBase,
 		HTTP:      &http.Client{Timeout: 30 * time.Second},
@@ -59,6 +61,11 @@ func NormalizeSWID(s string) string {
 		s += "}"
 	}
 	return strings.ToUpper(s)
+}
+
+// NormalizeSWIDSecret normalizes a SWID held as a secret.
+func NormalizeSWIDSecret(s secrets.Secret) secrets.Secret {
+	return secrets.New(NormalizeSWID(s.Reveal()))
 }
 
 func (c *Client) leaguePath(base string) string {
@@ -85,11 +92,11 @@ func (c *Client) do(ctx context.Context, method, rawURL string, body any, header
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	if c.ESPNS2 != "" {
-		req.AddCookie(&http.Cookie{Name: "espn_s2", Value: c.ESPNS2})
+	if !c.ESPNS2.Empty() {
+		req.AddCookie(&http.Cookie{Name: "espn_s2", Value: c.ESPNS2.Reveal()})
 	}
-	if c.SWID != "" {
-		req.AddCookie(&http.Cookie{Name: "SWID", Value: c.SWID})
+	if !c.SWID.Empty() {
+		req.AddCookie(&http.Cookie{Name: "SWID", Value: c.SWID.Reveal()})
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -101,10 +108,10 @@ func (c *Client) do(ctx context.Context, method, rawURL string, body any, header
 		return err
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return fmt.Errorf("espn: %s %s: %d (check ESPN_S2 and SWID cookies)", method, req.URL.Path, resp.StatusCode)
+		return fmt.Errorf("espn: %s %s: %d (ESPN rejected the credentials; refresh them with 'ffagent secrets set')", method, req.URL.Path, resp.StatusCode)
 	}
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("espn: %s %s: %d: %s", method, req.URL.Path, resp.StatusCode, truncate(string(data), 500))
+		return fmt.Errorf("espn: %s %s: %d: %s", method, req.URL.Path, resp.StatusCode, c.scrub(truncate(string(data), 500)))
 	}
 	if out == nil || len(data) == 0 {
 		return nil
@@ -113,6 +120,18 @@ func (c *Client) do(ctx context.Context, method, rawURL string, body any, header
 		return fmt.Errorf("espn: decoding %s: %w", req.URL.Path, err)
 	}
 	return nil
+}
+
+// scrub removes credentials from text that might be shown, in case ESPN
+// echoes request data back in an error.
+func (c *Client) scrub(s string) string {
+	for _, sec := range []secrets.Secret{c.ESPNS2, c.SWID} {
+		if v := sec.Reveal(); v != "" {
+			s = strings.ReplaceAll(s, v, "[REDACTED]")
+			s = strings.ReplaceAll(s, strings.Trim(v, "{}"), "[REDACTED]")
+		}
+	}
+	return s
 }
 
 func truncate(s string, n int) string {
@@ -279,8 +298,10 @@ func mergeStats(a, b []StatLine) []StatLine {
 }
 
 // FreeAgents returns available players (free agents and players on waivers)
-// at the given position, sorted by ownership. Pass position "" for all.
-func (c *Client) FreeAgents(ctx context.Context, l *League, position string, limit int) ([]*Player, error) {
+// at the given position, sorted by ownership. Pass position "" for all, and
+// proTeams to limit the search to specific NFL teams (e.g. to find the
+// backup behind a newly injured starter).
+func (c *Client) FreeAgents(ctx context.Context, l *League, position string, proTeams []int, limit int) ([]*Player, error) {
 	players := map[string]any{
 		"filterStatus":                      map[string]any{"value": []string{StatusFreeAgent, StatusWaivers}},
 		"limit":                             limit,
@@ -290,6 +311,9 @@ func (c *Client) FreeAgents(ctx context.Context, l *League, position string, lim
 	}
 	if slot, ok := PositionSlot[position]; ok {
 		players["filterSlotIds"] = map[string]any{"value": []int{slot}}
+	}
+	if len(proTeams) > 0 {
+		players["filterProTeamIds"] = map[string]any{"value": proTeams}
 	}
 	b, _ := json.Marshal(map[string]any{"players": players})
 	var resp rawPlayersResponse

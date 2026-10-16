@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# ffagentctl — run ffagent with the installed service's credentials and
+# settings, and manage the watcher.
+#
+#   sudo ffagentctl analyze | matchup | lineup | waivers | trades | free-agents --pos RB
+#   sudo ffagentctl secrets set      # refresh ESPN cookies (hidden input)
+#   sudo ffagentctl secrets set email  # replace the Gmail app password
+#   sudo ffagentctl secrets check
+#   sudo ffagentctl email-test       # send a test email, check reply reading
+#   sudo ffagentctl mode apply       # watcher emails moves for your approval
+#   sudo ffagentctl mode dry-run     # watcher only logs what it would propose
+#   sudo ffagentctl status | logs
+#
+# Commands run as the unprivileged ffagent user in a transient systemd unit
+# that receives the decrypted vault passphrase the same way the service does,
+# so the passphrase is never shown or written in plaintext.
+set -euo pipefail
+
+CRED=/etc/credstore.encrypted/ffagent-passphrase
+ENVFILE=/etc/ffagent/watch.env
+UNIT=ffagent-watch.service
+
+die() { echo "ffagentctl: $*" >&2; exit 1; }
+[[ $EUID -eq 0 ]] || die "run with sudo"
+[[ $# -gt 0 ]] || { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+
+case "$1" in
+  mode)
+    case "${2:-}" in
+      apply)   echo 'FFAGENT_WATCH_FLAGS=--apply' > "$ENVFILE" ;;
+      dry-run) echo 'FFAGENT_WATCH_FLAGS=' > "$ENVFILE" ;;
+      *) die "usage: ffagentctl mode apply|dry-run" ;;
+    esac
+    chmod 0644 "$ENVFILE"
+    systemctl restart "$UNIT"
+    echo "watcher restarted in ${2} mode"
+    exit 0 ;;
+  status) exec systemctl status "$UNIT" --no-pager ;;
+  logs)   shift; exec journalctl -u "$UNIT" --no-pager -n 200 "$@" ;;
+esac
+
+for a in "$@"; do
+  [[ "$a" == "--apply" ]] && systemctl is-active --quiet "$UNIT" &&
+    die "the watcher is running and holds the change lock; use 'ffagentctl mode apply', or stop it first (systemctl stop $UNIT)"
+done
+
+io=--pipe
+[[ -t 0 && -t 1 ]] && io=--pty
+exec systemd-run --quiet --wait --collect "$io" --service-type=exec \
+  -p User=ffagent -p Group=ffagent \
+  -p "LoadCredentialEncrypted=ffagent-passphrase:$CRED" \
+  -p StateDirectory=ffagent -p StateDirectoryMode=0700 -p UMask=0077 \
+  -p LimitCORE=0 -p NoNewPrivileges=yes -p ProtectSystem=strict -p ProtectHome=yes -p PrivateTmp=yes \
+  -E HOME=/var/lib/ffagent \
+  -E FFAGENT_CONFIG=/etc/ffagent/config.json \
+  -E FFAGENT_VAULT=/var/lib/ffagent/secrets.vault \
+  /usr/local/bin/ffagent "$@"

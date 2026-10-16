@@ -9,6 +9,7 @@ import (
 
 	"github.com/avitechnix/lexx587-experimental/ffagent/internal/config"
 	"github.com/avitechnix/lexx587-experimental/ffagent/internal/espn"
+	"github.com/avitechnix/lexx587-experimental/ffagent/internal/secrets"
 )
 
 const season, week = 2026, 6
@@ -25,10 +26,10 @@ func (f *fakeESPN) FetchLeague(context.Context) (*espn.League, error) {
 	return f.league(), nil
 }
 
-func (f *fakeESPN) FreeAgents(_ context.Context, _ *espn.League, pos string, _ int) ([]*espn.Player, error) {
+func (f *fakeESPN) FreeAgents(_ context.Context, _ *espn.League, pos string, teams []int, _ int) ([]*espn.Player, error) {
 	var out []*espn.Player
 	for _, p := range f.pool {
-		if p.Position == pos {
+		if (pos == "" || p.Position == pos) && (len(teams) == 0 || contains(teams, p.ProTeamID)) {
 			c := *p
 			out = append(out, &c)
 		}
@@ -127,7 +128,7 @@ func scenario() (*fakeESPN, *espn.Team) {
 
 func testAgent(f *fakeESPN) *Agent {
 	cfg := config.Default()
-	cfg.LeagueID, cfg.TeamID, cfg.SWID = 1, 1, "{ME}"
+	cfg.LeagueID, cfg.TeamID, cfg.SWID = 1, 1, secrets.New("{ME}")
 	a := New(f, cfg)
 	a.Now = func() time.Time { return time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC) }
 	return a
@@ -315,4 +316,13 @@ func TestUnderdogStartsHighVariancePlayer(t *testing.T) {
 	if p.Matchup.WinProb <= p.Matchup.BaselineWinProb {
 		t.Errorf("win prob %.3f should beat baseline %.3f", p.Matchup.WinProb, p.Matchup.BaselineWinProb)
 	}
+}
+
+func contains(xs []int, v int) bool {
+	for _, x := range xs {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
