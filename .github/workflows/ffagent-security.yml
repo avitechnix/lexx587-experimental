@@ -1,0 +1,39 @@
+name: ffagent security
+
+on:
+  push:
+    paths: ["ffagent/**", ".github/workflows/ffagent-security.yml"]
+  pull_request:
+    paths: ["ffagent/**", ".github/workflows/ffagent-security.yml"]
+  schedule:
+    - cron: "17 13 * * 1" # weekly, to catch newly published CVEs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: ffagent
+
+jobs:
+  test-and-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ffagent/go.mod # honors the toolchain directive
+          cache-dependency-path: ffagent/go.sum
+      - name: Verify module checksums
+        run: go mod verify
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race ./...
+      - name: govulncheck (fails on vulnerabilities reachable from our code)
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          "$(go env GOPATH)/bin/govulncheck" ./...

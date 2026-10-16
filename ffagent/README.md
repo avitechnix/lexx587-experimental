@@ -41,6 +41,20 @@ cd ffagent
 go build -o ffagent ./cmd/ffagent
 ```
 
+This needs Go 1.26.9 or newer. With an older Go installed, the `go` command fetches the
+pinned, patched toolchain (`go1.27.2`) automatically. Don't override that with
+`GOTOOLCHAIN=local`: older Go releases have known vulnerabilities in `net/http`,
+`crypto/tls` and `crypto/x509`, which this agent relies on.
+
+### Security updates
+
+- `.github/workflows/ffagent-security.yml` runs the tests and
+  [govulncheck](https://go.dev/doc/security/vuln/) on every change and weekly. It fails
+  if any known vulnerability is reachable from this code.
+- Dependabot opens PRs for Go module and GitHub Actions updates.
+- To scan locally:
+  `go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...`
+
 You need your league ID and two cookies from a logged-in browser session on espn.com.
 The cookies are needed for private leagues and for making changes:
 
