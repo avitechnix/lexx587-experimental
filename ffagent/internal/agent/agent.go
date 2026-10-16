@@ -20,7 +20,7 @@ import (
 // ESPN is the subset of the ESPN client the agent uses.
 type ESPN interface {
 	FetchLeague(ctx context.Context) (*espn.League, error)
-	FreeAgents(ctx context.Context, l *espn.League, position string, limit int) ([]*espn.Player, error)
+	FreeAgents(ctx context.Context, l *espn.League, position string, proTeams []int, limit int) ([]*espn.Player, error)
 	Submit(ctx context.Context, t *espn.Transaction) (*espn.TransactionResult, error)
 }
 
@@ -30,6 +30,16 @@ type Agent struct {
 	Cfg  config.Config
 	Opts analysis.Options
 	Now  func() time.Time
+
+	// Injuries is the latest injury news (see the news package), keyed by
+	// player ID. It overrides ESPN fantasy statuses, which can lag, and
+	// drives opportunity boosts for the next player up.
+	Injuries map[int]analysis.Injury
+	// RecentlyAcquired holds when the agent picked up each player; players
+	// acquired within KeepNewPickupsDays are never dropped (no churn).
+	RecentlyAcquired map[int]time.Time
+	// OnSubmitted, when set, is called after each transaction ESPN accepts.
+	OnSubmitted func(Action)
 }
 
 // New returns an agent with default valuation options.
@@ -117,19 +127,12 @@ func (a *Agent) Plan(ctx context.Context) (*Plan, error) {
 	}
 	p.Me = me
 
-	s := &state{a: a, l: l, me: me, values: map[int]*analysis.Valuation{}, added: map[int]bool{}}
-	for _, t := range l.Teams {
-		for _, pl := range t.Roster {
-			s.values[pl.ID] = analysis.Value(l, pl, a.Opts)
-		}
-	}
-	s.pool, err = a.loadPool(ctx, l)
+	s := a.newState(l, me)
+	pool, err := a.loadPool(ctx, l)
 	if err != nil {
 		p.Warnings = append(p.Warnings, "free agents: "+err.Error())
 	}
-	for _, pl := range s.pool {
-		s.values[pl.ID] = analysis.Value(l, pl, a.Opts)
-	}
+	s.setPool(pool)
 
 	work := me.Clone()
 	// Set the risk preference from the current roster first so roster moves
@@ -150,20 +153,87 @@ func (a *Agent) Plan(ctx context.Context) (*Plan, error) {
 	return p, nil
 }
 
+// newState values every rostered player, with injury news applied.
+func (a *Agent) newState(l *espn.League, me *espn.Team) *state {
+	s := &state{a: a, l: l, me: me, values: map[int]*analysis.Valuation{}, added: map[int]bool{}}
+	for _, t := range l.Teams {
+		for _, pl := range t.Roster {
+			a.applyNews(pl)
+			s.values[pl.ID] = analysis.Value(l, pl, a.Opts)
+		}
+	}
+	s.applyOpportunity()
+	return s
+}
+
+// setPool adds available players and re-runs opportunity boosts so backups
+// in the pool are credited too.
+func (s *state) setPool(pool []*espn.Player) {
+	s.pool = pool
+	for _, pl := range pool {
+		s.a.applyNews(pl)
+		s.values[pl.ID] = analysis.Value(s.l, pl, s.a.Opts)
+	}
+	// Recompute rostered values so boosts aren't applied twice.
+	for _, t := range s.l.Teams {
+		for _, pl := range t.Roster {
+			s.values[pl.ID] = analysis.Value(s.l, pl, s.a.Opts)
+		}
+	}
+	s.applyOpportunity()
+}
+
+func (s *state) applyOpportunity() {
+	if len(s.a.Injuries) == 0 {
+		return
+	}
+	var all []*espn.Player
+	for _, t := range s.l.Teams {
+		all = append(all, t.Roster...)
+	}
+	all = append(all, s.pool...)
+	fresh := time.Duration(s.a.Cfg.NewsFreshHours) * time.Hour
+	analysis.ApplyOpportunity(s.l, all, s.values, s.a.Injuries, s.a.Now(), fresh)
+}
+
+// applyNews records the injury report's status for valuation. ESPN
+// Fantasy's own status is left alone because it governs IR eligibility, and
+// players designated to return are left to ESPN Fantasy's status.
+func (a *Agent) applyNews(p *espn.Player) {
+	if inj, ok := a.Injuries[p.ID]; ok && inj.Status != "" && !inj.Returning {
+		p.NewsStatus = inj.Status
+	}
+}
+
+// freshInjuryTeams returns NFL teams with a fresh, significant injury.
+func (a *Agent) freshInjuryTeams(l *espn.League) []int {
+	fresh := time.Duration(a.Cfg.NewsFreshHours) * time.Hour
+	seen := map[int]bool{}
+	var teams []int
+	for _, inj := range a.Injuries {
+		if inj.ProTeamID == 0 || inj.Returning || seen[inj.ProTeamID] || a.Now().Sub(inj.Date) > fresh {
+			continue
+		}
+		switch inj.Status {
+		case espn.InjuryOut, espn.InjuryDoubtful, espn.InjuryReserve, espn.InjurySuspension:
+			seen[inj.ProTeamID] = true
+			teams = append(teams, inj.ProTeamID)
+		}
+	}
+	sort.Ints(teams)
+	return teams
+}
+
 func (a *Agent) loadPool(ctx context.Context, l *espn.League) ([]*espn.Player, error) {
 	seen := map[int]bool{}
 	var out []*espn.Player
 	var firstErr error
-	for pos := range espn.PositionSlot {
-		if l.LineupSlotCounts[espn.PositionSlot[pos]] == 0 && !flexEligible(l, pos) {
-			continue // league doesn't start this position
-		}
-		ps, err := a.ESPN.FreeAgents(ctx, l, pos, a.Cfg.FreeAgentsPerPosition)
+	add := func(ps []*espn.Player, err error) {
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
-			continue
+			return
 		}
 		for _, p := range ps {
 			if !seen[p.ID] && p.OnTeamID == 0 {
@@ -171,6 +241,17 @@ func (a *Agent) loadPool(ctx context.Context, l *espn.League) ([]*espn.Player, e
 				out = append(out, p)
 			}
 		}
+	}
+	for pos := range espn.PositionSlot {
+		if l.LineupSlotCounts[espn.PositionSlot[pos]] == 0 && !flexEligible(l, pos) {
+			continue // league doesn't start this position
+		}
+		add(a.ESPN.FreeAgents(ctx, l, pos, nil, a.Cfg.FreeAgentsPerPosition))
+	}
+	// Backups behind freshly injured starters may not be widely owned yet,
+	// which is exactly when they're worth grabbing.
+	if teams := a.freshInjuryTeams(l); len(teams) > 0 {
+		add(a.ESPN.FreeAgents(ctx, l, "", teams, 50))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID }) // deterministic ties
 	return out, firstErr

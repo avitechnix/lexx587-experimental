@@ -15,6 +15,12 @@
   "bench_depth_weight": 0.15,
   "risk_aware": true,
 
+  "news_fresh_hours": 48,
+  "keep_new_pickups_days": 7,
+  "max_acquisitions_per_day": 3,
+  "watch_interval_minutes": 5,
+  "full_replan_minutes": 60,
+
   "min_trade_gain": 8,
   "trade_tolerance": 3,
   "max_trade_ideas": 5,

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/avitechnix/lexx587-experimental/ffagent/internal/analysis"
 	"github.com/avitechnix/lexx587-experimental/ffagent/internal/espn"
 	"github.com/avitechnix/lexx587-experimental/ffagent/internal/lineup"
 	"github.com/avitechnix/lexx587-experimental/ffagent/internal/secrets"
@@ -89,6 +88,9 @@ func (a *Agent) submit(ctx context.Context, act Action, w io.Writer) error {
 	if res != nil && res.Status != "" {
 		fmt.Fprintf(w, "  ESPN: %s %s\n", res.Status, res.ID)
 	}
+	if a.OnSubmitted != nil {
+		a.OnSubmitted(act)
+	}
 	return nil
 }
 
@@ -103,7 +105,7 @@ func (a *Agent) PlanLineup(ctx context.Context) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &state{a: a, l: l, me: me, values: map[int]*analysis.Valuation{}, added: map[int]bool{}}
+	s := a.newState(l, me)
 	p := &Plan{League: l, Me: me, Roster: me}
 	p.Matchup = s.analyzeMatchup(me)
 	s.lambda = p.Matchup.Lambda

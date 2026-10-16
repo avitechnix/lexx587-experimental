@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/avitechnix/lexx587-experimental/ffagent/internal/espn"
 )
@@ -83,7 +84,7 @@ func (s *state) droppable(t *espn.Team, exclude ...int) []*espn.Player {
 	var out []*espn.Player
 	for _, p := range t.Roster {
 		if skip[p.ID] || p.LineupSlot == espn.SlotIR || p.Locked || s.protected(p) ||
-			p.Status == pendingClaim || p.Status == pendingDrop || s.added[p.ID] {
+			p.Status == pendingClaim || p.Status == pendingDrop || s.added[p.ID] || s.recentPickup(p) {
 			continue
 		}
 		out = append(out, p)
@@ -113,4 +114,11 @@ func without(roster []*espn.Player, id int) []*espn.Player {
 		}
 	}
 	return out
+}
+
+// recentPickup reports whether the agent acquired the player recently; such
+// players are kept so the agent doesn't churn its own pickups.
+func (s *state) recentPickup(p *espn.Player) bool {
+	at, ok := s.a.RecentlyAcquired[p.ID]
+	return ok && s.a.Now().Sub(at) < time.Duration(s.a.Cfg.KeepNewPickupsDays)*24*time.Hour
 }

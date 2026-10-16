@@ -42,6 +42,19 @@ type Config struct {
 	// RiskAware picks a riskier or safer lineup to maximize win probability.
 	RiskAware bool `json:"risk_aware"`
 
+	// News and watch mode.
+	// NewsFreshHours is how long an injury report counts as breaking news
+	// (before ESPN projections catch up) for boosting the next player up.
+	NewsFreshHours int `json:"news_fresh_hours"`
+	// KeepNewPickupsDays protects the agent's own pickups from being dropped.
+	KeepNewPickupsDays int `json:"keep_new_pickups_days"`
+	// MaxAcquisitionsPerDay caps adds and claims made by watch mode.
+	MaxAcquisitionsPerDay int `json:"max_acquisitions_per_day"`
+	// WatchIntervalMinutes is how often watch mode polls the news.
+	WatchIntervalMinutes int `json:"watch_interval_minutes"`
+	// FullReplanMinutes forces a full re-plan even without news.
+	FullReplanMinutes int `json:"full_replan_minutes"`
+
 	// Trades.
 	MinTradeGain     float64 `json:"min_trade_gain"`
 	TradeTolerance   float64 `json:"trade_tolerance"`
@@ -62,6 +75,11 @@ func Default() Config {
 		ThisWeekWeight:        2,
 		BenchDepthWeight:      0.15,
 		RiskAware:             true,
+		NewsFreshHours:        48,
+		KeepNewPickupsDays:    7,
+		MaxAcquisitionsPerDay: 3,
+		WatchIntervalMinutes:  5,
+		FullReplanMinutes:     60,
 		MinTradeGain:          8,
 		TradeTolerance:        3,
 		MaxTradeIdeas:         5,

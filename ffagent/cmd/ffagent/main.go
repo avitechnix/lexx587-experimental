@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/avitechnix/lexx587-experimental/ffagent/internal/analysis"
 	"github.com/avitechnix/lexx587-experimental/ffagent/internal/config"
 	"github.com/avitechnix/lexx587-experimental/ffagent/internal/espn"
+	"github.com/avitechnix/lexx587-experimental/ffagent/internal/news"
 	"github.com/avitechnix/lexx587-experimental/ffagent/internal/secrets"
 )
 
@@ -35,6 +37,9 @@ Commands:
   trades         Trade ideas that help you and plausibly help your partner
   free-agents    Best available players (use --pos QB|RB|WR|TE|K|D/ST)
   run            Everything above; with --apply, executes IR, pickups, lineup
+  watch          Poll injury news and act immediately: grab free agents and
+                 file waiver claims the moment an opening appears, and fix
+                 the lineup when a starter is ruled out
   secrets set    Store your ESPN cookies in the encrypted vault (hidden input)
   secrets check  Verify the vault decrypts (never prints the values)
   secrets passwd Change the vault passphrase
@@ -46,7 +51,8 @@ Flags:
                  ~/.config/ffagent/secrets.vault)
   --apply        Actually make the changes on ESPN (default: dry run)
   --propose      With trades/run --apply: also send trade offers
-  --every DUR    With run: repeat on an interval (e.g. 6h) until interrupted
+  --every DUR    With run: repeat on an interval (e.g. 6h) until interrupted;
+                 with watch: polling interval (default 5m, minimum 1m)
   --pos POS      With free-agents: position filter
   --limit N      With free-agents: number of players to show (default 20)
 `
@@ -101,12 +107,35 @@ func main() {
 	}
 	client := espn.NewClient(cfg.LeagueID, cfg.Season, cfg.ESPNS2, cfg.SWID)
 	ag := agent.New(client, cfg)
+	newsClient := news.NewClient()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	out := os.Stdout
 
+	if *apply {
+		release, err := acquireLock(filepath.Join(filepath.Dir(*vaultPath), "ffagent.lock"))
+		if err != nil {
+			fatal(err)
+		}
+		defer release()
+	}
+	if cmd != "watch" && cmd != "free-agents" {
+		loadInjuries(ctx, ag, newsClient)
+	}
+
 	switch cmd {
+	case "watch":
+		interval := *every
+		if interval <= 0 {
+			interval = time.Duration(cfg.WatchIntervalMinutes) * time.Minute
+		}
+		w := &agent.Watcher{Agent: ag, News: newsClient, Apply: *apply, Out: out}
+		fmt.Fprintf(out, "Watching injury news every %s (apply=%v, max %d pickups/day). Ctrl-C to stop.\n",
+			interval, *apply, cfg.MaxAcquisitionsPerDay)
+		if err := w.Run(ctx, interval); err != nil {
+			fatal(err)
+		}
 	case "analyze":
 		p := plan(ctx, ag)
 		agent.PrintHeader(out, p)
@@ -159,6 +188,19 @@ func main() {
 	}
 }
 
+// loadInjuries applies the latest injury report to planning, if available.
+func loadInjuries(ctx context.Context, ag *agent.Agent, nc *news.Client) {
+	reports, err := nc.Injuries(ctx)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "note: injury report unavailable:", err)
+		return
+	}
+	ag.Injuries = map[int]analysis.Injury{}
+	for id, r := range reports {
+		ag.Injuries[id] = analysis.Injury{PlayerID: id, ProTeamID: r.ProTeamID, Status: r.Status, Date: r.Date, Returning: r.Returning}
+	}
+}
+
 func plan(ctx context.Context, ag *agent.Agent) *agent.Plan {
 	p, err := ag.Plan(ctx)
 	if err != nil {
@@ -201,7 +243,7 @@ func freeAgents(ctx context.Context, c *espn.Client, ag *agent.Agent, pos string
 	if l == nil {
 		fatal(err)
 	}
-	ps, err := c.FreeAgents(ctx, l, strings.ToUpper(pos), max(limit*2, 50))
+	ps, err := c.FreeAgents(ctx, l, strings.ToUpper(pos), nil, max(limit*2, 50))
 	if err != nil {
 		fatal(err)
 	}

@@ -167,7 +167,7 @@ func Value(l *espn.League, p *espn.Player, o Options) *Valuation {
 
 	// This week.
 	v.OnBye = l.OnBye(p.ProTeamID, week)
-	v.InjuryFactor = WeekInjuryFactor(p.InjuryStatus)
+	v.InjuryFactor = WeekInjuryFactor(p.EffectiveInjury())
 	espnProj, hasProj := p.WeekProjection(season, week)
 	v.ESPNWeekProjection = espnProj
 	base := espnProj
@@ -195,7 +195,7 @@ func Value(l *espn.League, p *espn.Player, o Options) *Valuation {
 			v.RemainingGames++
 		}
 	}
-	ros := rosInjuryFactor(p.InjuryStatus, o)
+	ros := rosInjuryFactor(p.EffectiveInjury(), o)
 	v.ROSValue = v.PerGame * v.AccuracyFactor * float64(v.RemainingGames) * ros
 
 	v.addNotes(o)
@@ -234,8 +234,8 @@ func (v *Valuation) addNotes(o Options) {
 	if v.OnBye {
 		v.Notes = append(v.Notes, "on bye")
 	}
-	if p.InjuryStatus != espn.InjuryActive {
-		v.Notes = append(v.Notes, p.InjuryStatus)
+	if st := p.EffectiveInjury(); st != espn.InjuryActive {
+		v.Notes = append(v.Notes, st)
 	}
 	if v.WeeksPlayed >= 3 {
 		switch {

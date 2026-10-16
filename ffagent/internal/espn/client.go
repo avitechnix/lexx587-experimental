@@ -298,8 +298,10 @@ func mergeStats(a, b []StatLine) []StatLine {
 }
 
 // FreeAgents returns available players (free agents and players on waivers)
-// at the given position, sorted by ownership. Pass position "" for all.
-func (c *Client) FreeAgents(ctx context.Context, l *League, position string, limit int) ([]*Player, error) {
+// at the given position, sorted by ownership. Pass position "" for all, and
+// proTeams to limit the search to specific NFL teams (e.g. to find the
+// backup behind a newly injured starter).
+func (c *Client) FreeAgents(ctx context.Context, l *League, position string, proTeams []int, limit int) ([]*Player, error) {
 	players := map[string]any{
 		"filterStatus":                      map[string]any{"value": []string{StatusFreeAgent, StatusWaivers}},
 		"limit":                             limit,
@@ -309,6 +311,9 @@ func (c *Client) FreeAgents(ctx context.Context, l *League, position string, lim
 	}
 	if slot, ok := PositionSlot[position]; ok {
 		players["filterSlotIds"] = map[string]any{"value": []int{slot}}
+	}
+	if len(proTeams) > 0 {
+		players["filterProTeamIds"] = map[string]any{"value": proTeams}
 	}
 	b, _ := json.Marshal(map[string]any{"players": players})
 	var resp rawPlayersResponse

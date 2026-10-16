@@ -32,6 +32,11 @@ A Go agent that manages your ESPN fantasy football team. Each run it:
    no worse than a small tolerance by the same measure, so they have a reason to say
    yes. It can send the offers for you.
 
+6. **Watches injury news and moves first.** `ffagent watch` polls ESPN's league-wide
+   injury report and NFL headlines every few minutes. When a starter is ruled out, it
+   adds his backup the moment the opening appears, or queues a waiver claim. It also
+   benches the injured starter (see [Injury news and watch mode](#injury-news-and-watch-mode)).
+
 Everything is a **dry run by default**. Nothing changes on ESPN unless you pass `--apply`.
 
 ## Setup
@@ -125,12 +130,64 @@ Never paste the cookies or the passphrase into a chat, a ticket, or a shell comm
 ./ffagent run --apply --every 6h   # keep managing the team on a schedule
 ```
 
+Only one applying instance runs at a time. `--apply` takes an exclusive lock, so a
+watcher and a scheduled run can't both make moves at once.
+
 With `--apply`, roster moves go first, in order, and the run stops at the first
 failure. If any move changed who's on the roster, the agent re-reads the league before
 setting the lineup.
 
-A good routine: run `waivers --apply` before your league's waiver deadline, and
-`run --apply --every 3h` on game days to catch late inactives.
+A good routine is to keep `watch --apply` running all week, and run `waivers --apply`
+once before your league's waiver deadline.
+
+## Injury news and watch mode
+
+```sh
+./ffagent watch                 # dry run: prints injury changes and what it would do
+./ffagent watch --apply         # act on them as they happen
+./ffagent watch --apply --every 2m
+```
+
+Every interval, the watcher:
+
+1. **Reads ESPN's injury report** for all 32 teams and the latest NFL headlines. These
+   are public feeds, and their player IDs are the same as fantasy player IDs.
+2. **Detects changes** since the last check, such as Questionable → Out, a move to IR,
+   or a player cleared from the report. It also flags new headlines about your
+   players or your opponent's.
+3. **Re-plans right away** when anything changed, and otherwise at least hourly.
+   - **Breaking news first.** The fresh status updates projections and the lineup
+     before ESPN Fantasy's projections catch up.
+   - **Next man up.** When a starter goes OUT or to IR, his same-team backup gets a
+     share of the lost production: QB 90%, RB 55%, TE 45%, WR 30% per game. The boost
+     covers the expected games missed (IR means at least 4). The agent also searches
+     free agents on that NFL team specifically, so a low-owned backup still gets
+     found.
+4. **Acts.**
+   - **Free agents** are first come, first served, so the add is submitted on the spot.
+   - **Waiver players** get a claim filed immediately. A claim doesn't beat other
+     managers by speed: ESPN awards waivers by priority or FAAB bid when they process.
+   - **Lineup.** An injured starter is benched in the same pass.
+
+Safeguards:
+
+- **Boosts only for fresh news.** Opportunity boosts apply only to reports newer than
+  `news_fresh_hours` (48). After that, ESPN's projections have caught up, and boosting
+  again would double-count.
+- **Returning players are left alone.** Players designated to return (`IR-R`, `PUP-R`,
+  `NFI-R`) never boost their backups.
+- **IR legality follows ESPN Fantasy.** Projections and lineups use the freshest
+  status. IR moves use ESPN Fantasy's own status, because that's what ESPN enforces,
+  so a move ESPN would reject is never attempted.
+- **Pickup limits.** At most `max_acquisitions_per_day` pickups (3). Pickups are never
+  dropped again within `keep_new_pickups_days` (7), so the agent doesn't churn its own
+  adds.
+- **State survives restarts.** Seen statuses, seen headlines and the pickup log are
+  stored in `~/.config/ffagent/watch-state.json`, so a restart doesn't react to old
+  news again.
+
+The watcher needs the vault passphrase without a prompt. Run it as a service using one
+of the unattended options under [Storing credentials](#storing-credentials-encrypted-only).
 
 ### Tuning (`config.example.json`)
 
@@ -155,9 +212,12 @@ A good routine: run `waivers --apply` before your league's waiver deadline, and
   follows the payloads ESPN's own web app sends, but ESPN can change it without notice.
   Try one command with `--apply` and check the result on espn.com before you schedule
   it.
-- Projections come from ESPN and are adjusted by each player's track record. The agent
-  doesn't read news, so a late scratch only shows up once ESPN updates the player's
-  status. Running it on a schedule close to kickoff covers most of that.
+- **News coverage.** News comes from ESPN's injury report and headline tags. Status
+  changes are acted on, but the agent doesn't read article text. A depth-chart change
+  with no injury, such as "X will start", only counts once ESPN's projections reflect
+  it.
+- **Feed format.** The news feeds are also unofficial. If ESPN changes them, the
+  watcher logs an error and retries on the next interval.
 - Multi-week playoff matchups are treated one scoring week at a time.
 
 ## Layout
@@ -169,6 +229,7 @@ internal/analysis   player valuation: accuracy vs projections, volatility, ROS
 internal/lineup     exact lineup optimizer (Hungarian assignment)
 internal/agent      IR, pickups, matchup strategy, trades, execution, reports
 internal/config     JSON + env configuration (rejects plaintext credentials)
+internal/news       ESPN injury report and headline feeds
 internal/secrets    encrypted vault, passphrase sources, redacting Secret type
 ```
 
