@@ -13,6 +13,26 @@ import (
 // MinPassphraseLen is the shortest passphrase accepted for a new vault.
 const MinPassphraseLen = 12
 
+// Unattended returns the passphrase from a non-interactive source (systemd
+// credential, passphrase file, or CI secret), or ok=false if none is set.
+func Unattended() (pass []byte, ok bool, err error) {
+	if dir := os.Getenv("CREDENTIALS_DIRECTORY"); dir != "" {
+		if _, err := os.Stat(filepath.Join(dir, "ffagent-passphrase")); err == nil {
+			p, err := Passphrase()
+			return p, err == nil, err
+		}
+	}
+	if os.Getenv("FFAGENT_PASSPHRASE_FILE") != "" {
+		p, err := Passphrase()
+		return p, err == nil, err
+	}
+	if _, set := os.LookupEnv("FFAGENT_PASSPHRASE"); set {
+		p, err := Passphrase()
+		return p, err == nil, err
+	}
+	return nil, false, nil
+}
+
 // Passphrase finds the vault passphrase for this run, in order:
 //
 //  1. $CREDENTIALS_DIRECTORY/ffagent-passphrase — a systemd encrypted

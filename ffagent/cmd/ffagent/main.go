@@ -45,7 +45,8 @@ Commands:
   secrets passwd Change the vault passphrase
 
 Flags:
-  --config FILE  JSON config (see config.example.json); env vars override:
+  --config FILE  JSON config (default $FFAGENT_CONFIG; see config.example.json);
+                 env vars override:
                  ESPN_LEAGUE_ID, ESPN_SEASON, ESPN_TEAM_ID
   --vault FILE   Encrypted credentials vault (default: $FFAGENT_VAULT or
                  ~/.config/ffagent/secrets.vault)
@@ -73,7 +74,7 @@ func main() {
 	}
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
-	cfgPath := fs.String("config", "", "config file")
+	cfgPath := fs.String("config", os.Getenv("FFAGENT_CONFIG"), "config file")
 	vaultPath := fs.String("vault", secrets.DefaultVaultPath(), "encrypted credentials vault")
 	apply := fs.Bool("apply", false, "make changes on ESPN")
 	propose := fs.Bool("propose", false, "send trade offers")
@@ -130,7 +131,8 @@ func main() {
 		if interval <= 0 {
 			interval = time.Duration(cfg.WatchIntervalMinutes) * time.Minute
 		}
-		w := &agent.Watcher{Agent: ag, News: newsClient, Apply: *apply, Out: out}
+		w := &agent.Watcher{Agent: ag, News: newsClient, Apply: *apply, Out: out,
+			StatePath: filepath.Join(filepath.Dir(*vaultPath), "watch-state.json")}
 		fmt.Fprintf(out, "Watching injury news every %s (apply=%v, max %d pickups/day). Ctrl-C to stop.\n",
 			interval, *apply, cfg.MaxAcquisitionsPerDay)
 		if err := w.Run(ctx, interval); err != nil {

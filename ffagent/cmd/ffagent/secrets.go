@@ -42,8 +42,16 @@ func secretsSet(path string) error {
 		}
 	} else {
 		fmt.Fprintln(os.Stderr, "Creating a new encrypted vault at", path)
-		if pass, err = secrets.NewPassphrase(); err != nil {
+		// A service install supplies a generated passphrase (e.g. a systemd
+		// encrypted credential); otherwise ask for one.
+		var ok bool
+		if pass, ok, err = secrets.Unattended(); err != nil {
 			return err
+		}
+		if !ok {
+			if pass, err = secrets.NewPassphrase(); err != nil {
+				return err
+			}
 		}
 	}
 	defer wipe(pass)

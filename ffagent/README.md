@@ -39,7 +39,49 @@ A Go agent that manages your ESPN fantasy football team. Each run it:
 
 Everything is a **dry run by default**. Nothing changes on ESPN unless you pass `--apply`.
 
-## Setup
+## Server install (recommended)
+
+On any Linux server with systemd 250+ (Ubuntu 22.04+, Debian 12+, Fedora, etc.), for
+example a small VPS or a Raspberry Pi:
+
+```sh
+git clone -b claude/espn-fantasy-football-agent-3nhs6i https://github.com/avitechnix/lexx587-experimental
+cd lexx587-experimental/ffagent
+sudo ./deploy/install.sh
+```
+
+The installer:
+
+1. **Installs Go if needed.** It downloads Go 1.27.2 and checks it against a pinned
+   SHA-256.
+2. **Builds** the agent.
+3. **Creates a locked-down `ffagent` system user.**
+4. **Asks for your league ID** (and optionally your team ID).
+5. **Generates a random vault passphrase.** It's sealed with `systemd-creds` (bound to
+   the TPM2 chip if the machine has one). You never see or type it; it exists in
+   plaintext only inside a pipe at setup time and in systemd's private, in-memory
+   credential directory while the service runs.
+6. **Asks you to paste the two ESPN cookies** into hidden prompts.
+7. **Checks it can read your league**, then starts `ffagent watch` as a
+   sandboxed service that restarts on failure and on boot. It runs with no
+   privileges, a read-only filesystem except its state directory, no core dumps,
+   and network access limited to IP sockets. You choose apply or dry-run mode.
+
+Day to day:
+
+```sh
+sudo ffagentctl logs -f        # what it sees and does
+sudo ffagentctl analyze        # also: matchup, lineup, waivers, trades, free-agents
+sudo ffagentctl mode apply     # or: mode dry-run
+sudo ffagentctl secrets set    # when ESPN cookies expire (you'll see 401 errors in the logs)
+sudo ./deploy/install.sh       # update after pulling new code; keeps config and vault
+sudo ./deploy/uninstall.sh
+```
+
+Settings are in `/etc/ffagent/config.json`. Restart after editing:
+`sudo systemctl restart ffagent-watch`.
+
+## Setup (manual / development)
 
 ```sh
 cd ffagent
