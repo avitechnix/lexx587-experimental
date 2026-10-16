@@ -1,0 +1,25 @@
+{
+  "league_id": 12345678,
+  "season": 2026,
+  "team_id": 0,
+  "espn_s2": "",
+  "swid": "",
+
+  "protected_players": ["Patrick Mahomes"],
+  "ir_eligible_statuses": ["OUT", "INJURY_RESERVE"],
+
+  "max_acquisitions_per_run": 2,
+  "min_pickup_gain": 5,
+  "free_agents_per_position": 25,
+  "max_faab_fraction": 0.35,
+
+  "this_week_weight": 2,
+  "bench_depth_weight": 0.15,
+  "risk_aware": true,
+
+  "min_trade_gain": 8,
+  "trade_tolerance": 3,
+  "max_trade_ideas": 5,
+  "propose_trades": false,
+  "trade_expiry_hours": 48
+}
