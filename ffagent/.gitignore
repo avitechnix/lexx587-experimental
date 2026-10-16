@@ -1,2 +1,3 @@
 /ffagent
 config.json
+*.vault

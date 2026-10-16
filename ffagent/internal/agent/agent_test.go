@@ -9,6 +9,7 @@ import (
 
 	"github.com/avitechnix/lexx587-experimental/ffagent/internal/config"
 	"github.com/avitechnix/lexx587-experimental/ffagent/internal/espn"
+	"github.com/avitechnix/lexx587-experimental/ffagent/internal/secrets"
 )
 
 const season, week = 2026, 6
@@ -127,7 +128,7 @@ func scenario() (*fakeESPN, *espn.Team) {
 
 func testAgent(f *fakeESPN) *Agent {
 	cfg := config.Default()
-	cfg.LeagueID, cfg.TeamID, cfg.SWID = 1, 1, "{ME}"
+	cfg.LeagueID, cfg.TeamID, cfg.SWID = 1, 1, secrets.New("{ME}")
 	a := New(f, cfg)
 	a.Now = func() time.Time { return time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC) }
 	return a

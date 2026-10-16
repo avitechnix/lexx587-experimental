@@ -14,6 +14,7 @@ import (
 	"github.com/avitechnix/lexx587-experimental/ffagent/internal/config"
 	"github.com/avitechnix/lexx587-experimental/ffagent/internal/espn"
 	"github.com/avitechnix/lexx587-experimental/ffagent/internal/lineup"
+	"github.com/avitechnix/lexx587-experimental/ffagent/internal/secrets"
 )
 
 // ESPN is the subset of the ESPN client the agent uses.
@@ -94,7 +95,7 @@ func (a *Agent) myTeam(l *espn.League) (*espn.Team, error) {
 		}
 		return nil, fmt.Errorf("team %d not found in league %d", a.Cfg.TeamID, l.ID)
 	}
-	if t := l.TeamByOwner(espn.NormalizeSWID(a.Cfg.SWID)); t != nil {
+	if t := l.TeamByOwner(espn.NormalizeSWID(a.Cfg.SWID.Reveal())); t != nil {
 		return t, nil
 	}
 	return nil, fmt.Errorf("couldn't find your team: set team_id (ESPN_TEAM_ID) or a valid SWID")
@@ -292,4 +293,4 @@ func activeCount(t *espn.Team) int {
 	return n
 }
 
-func (s *state) member() string { return espn.NormalizeSWID(s.a.Cfg.SWID) }
+func (s *state) member() secrets.Secret { return espn.NormalizeSWIDSecret(s.a.Cfg.SWID) }

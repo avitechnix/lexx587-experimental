@@ -3,12 +3,15 @@ package espn
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/avitechnix/lexx587-experimental/ffagent/internal/secrets"
 )
 
 const leagueJSON = `{
@@ -50,6 +53,7 @@ const proJSON = `{"settings": {"proTeams": [{"id": 12, "abbrev": "kc", "byeWeek"
 
 func TestFetchLeagueAndSubmit(t *testing.T) {
 	var posted Transaction
+	var postedRaw map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if c, err := r.Cookie("espn_s2"); err != nil || c.Value != "s2" {
 			t.Errorf("missing espn_s2 cookie on %s", r.URL)
@@ -61,6 +65,7 @@ func TestFetchLeagueAndSubmit(t *testing.T) {
 			if err := json.Unmarshal(b, &posted); err != nil {
 				t.Errorf("bad body: %v", err)
 			}
+			_ = json.Unmarshal(b, &postedRaw)
 			io.WriteString(w, `{"id":"tx1","status":"EXECUTED"}`)
 		case strings.Contains(r.URL.RawQuery, "proTeamSchedules_wl"):
 			io.WriteString(w, proJSON)
@@ -75,7 +80,7 @@ func TestFetchLeagueAndSubmit(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(123, 2026, "s2", "abc-123")
+	c := NewClient(123, 2026, secrets.New("s2"), secrets.New("abc-123"))
 	c.ReadBase, c.WriteBase = srv.URL, srv.URL
 	c.Now = func() time.Time { return time.UnixMilli(1791000000000) } // before kickoff
 
@@ -86,7 +91,7 @@ func TestFetchLeagueAndSubmit(t *testing.T) {
 	if l.CurrentWeek != 6 || l.Name != "Test League" || l.RosterSize() != 16 {
 		t.Fatalf("league basics wrong: week %d name %q size %d", l.CurrentWeek, l.Name, l.RosterSize())
 	}
-	me := l.TeamByOwner(c.SWID)
+	me := l.TeamByOwner(c.SWID.Reveal())
 	if me == nil || me.ID != 1 || me.Name != "My Team" || me.FAABRemaining != 60 {
 		t.Fatalf("team detection wrong: %+v", me)
 	}
@@ -112,8 +117,34 @@ func TestFetchLeagueAndSubmit(t *testing.T) {
 	if err != nil || res.Status != "EXECUTED" {
 		t.Fatalf("submit: %v %+v", err, res)
 	}
-	if posted.Type != TxnRoster || posted.MemberID != "{ABC-123}" || len(posted.Items) != 1 ||
+	if posted.Type != TxnRoster || postedRaw["memberId"] != "{ABC-123}" || len(posted.Items) != 1 ||
 		*posted.Items[0].FromLineupSlotID != SlotRB || *posted.Items[0].ToLineupSlotID != SlotBench {
 		t.Errorf("posted %+v", posted)
+	}
+}
+
+func TestClientNeverExposesCredentials(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Simulate an error response that echoes the request back.
+		b, _ := io.ReadAll(r.Body)
+		c, _ := r.Cookie("espn_s2")
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, `{"error":"bad request","echo":`+string(b)+`,"cookie":"`+c.Value+`"}`)
+	}))
+	defer srv.Close()
+	c := NewClient(1, 2026, secrets.New("AEBtopsecretcookie"), secrets.New("{1111AAAA-2222-3333-4444-555566667777}"))
+	c.WriteBase = srv.URL
+	txn := NewTransaction(c.SWID, TxnRoster, 1, 6, LineupMove(1, SlotRB, SlotBench))
+	_, err := c.Submit(context.Background(), txn)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	for _, out := range []string{err.Error(), fmt.Sprintf("%+v", c), fmt.Sprintf("%#v", txn), fmt.Sprintf("%+v", *txn)} {
+		if strings.Contains(out, "topsecret") || strings.Contains(out, "1111AAAA") {
+			t.Errorf("credential leaked: %s", out)
+		}
+	}
+	if b, _ := json.Marshal(txn); strings.Contains(string(b), "1111AAAA") {
+		t.Errorf("transaction JSON leaks SWID: %s", b)
 	}
 }

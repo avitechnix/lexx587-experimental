@@ -2,8 +2,6 @@
   "league_id": 12345678,
   "season": 2026,
   "team_id": 0,
-  "espn_s2": "",
-  "swid": "",
 
   "protected_players": ["Patrick Mahomes"],
   "ir_eligible_statuses": ["OUT", "INJURY_RESERVE"],

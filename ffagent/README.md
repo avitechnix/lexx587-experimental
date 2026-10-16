@@ -41,22 +41,59 @@ cd ffagent
 go build -o ffagent ./cmd/ffagent
 ```
 
-You need your league ID and, for private leagues and for making changes, two cookies
-from a logged-in browser session on espn.com:
+You need your league ID and two cookies from a logged-in browser session on espn.com.
+The cookies are needed for private leagues and for making changes:
 
 | Setting | Where to find it |
 |---|---|
-| `ESPN_LEAGUE_ID` | The `leagueId=` value in your league's URL |
-| `ESPN_S2` | Browser dev tools → Application/Storage → Cookies → `espn_s2` |
-| `ESPN_SWID` | Same place, cookie `SWID` (looks like `{XXXXXXXX-...}`) |
+| `ESPN_LEAGUE_ID` | The `leagueId=` value in your league's URL. Not a secret; set it in the env or config. |
+| `espn_s2` | Browser dev tools → Application/Storage → Cookies → `espn_s2` |
+| `SWID` | Same place, cookie `SWID` (looks like `{XXXXXXXX-...}`) |
 | `ESPN_TEAM_ID` | Optional. Detected from your SWID. Otherwise it's the `teamId=` in your team URL |
 
+### Storing credentials (encrypted only)
+
+The cookies are kept **only** in an encrypted vault:
+
 ```sh
-export ESPN_LEAGUE_ID=12345678 ESPN_S2='AEB...' ESPN_SWID='{ABCD-...}'
+./ffagent secrets set      # choose a passphrase, then paste the cookies (input is hidden)
+./ffagent secrets check    # confirms the vault decrypts; never prints values
+./ffagent secrets passwd   # change the passphrase
 ```
 
-Treat these cookies like a password. Don't commit them. You can also put the settings
-in a JSON file (see `config.example.json`) and pass `--config`.
+- **Encryption.** The vault (`~/.config/ffagent/secrets.vault`, or `$FFAGENT_VAULT`)
+  is encrypted with AES-256-GCM. The key is derived from your passphrase with Argon2id
+  (64 MiB, 3 passes). The file header is authenticated, so tampering or a parameter
+  downgrade is detected. The file is written with mode `600`.
+- **Plaintext refused.** The agent won't start if credentials appear in plaintext:
+  `espn_s2`/`swid` in the config file, or `ESPN_S2`/`ESPN_SWID` in the environment
+  (it also scrubs them from the environment).
+- **Redacted in output.** In memory, credentials are a `Secret` type that prints as
+  `[REDACTED]` under every format verb, in JSON and in structured logs. They're only
+  revealed when the HTTPS request to ESPN is built. If ESPN's error responses echo
+  them back, they're scrubbed.
+- **Typed, never passed.** Secrets are never command-line arguments, which are visible
+  in `ps`. `secrets set` reads only from a real terminal with echo off and refuses
+  piped input.
+
+**Unattended runs** need the passphrase without a prompt. In order of preference:
+
+1. **systemd encrypted credential** (recommended on a server). The passphrase is
+   encrypted with the machine's key (TPM when available), and systemd decrypts it only
+   for the service, into a private in-memory directory:
+   ```sh
+   systemd-ask-password -n "Vault passphrase:" | sudo systemd-creds encrypt --name=ffagent-passphrase - /etc/credstore.encrypted/ffagent-passphrase
+   # in the service unit:
+   #   LoadCredentialEncrypted=ffagent-passphrase
+   ```
+2. **CI secret store** (e.g. a GitHub Actions secret exposed as `FFAGENT_PASSPHRASE`).
+   GitHub stores it encrypted and masks it in logs. The agent removes it from its
+   environment as soon as it reads it.
+3. **`FFAGENT_PASSPHRASE_FILE`** pointing at a file only you can read. The agent
+   refuses the file unless its mode is `600` or stricter. This is the weakest option,
+   because the passphrase sits on disk unencrypted. Use it only on an encrypted disk.
+
+Never paste the cookies or the passphrase into a chat, a ticket, or a shell command.
 
 ## Usage
 
@@ -95,6 +132,10 @@ A good routine: run `waivers --apply` before your league's waiver deadline, and
 
 ## Caveats
 
+- **Limits of encryption.** The credentials have to exist in plaintext in memory for
+  the moment they're sent to ESPN over HTTPS. Go can't reliably wipe strings, so
+  someone with root on the running machine (or reading its swap or core dumps) could
+  still recover them. Encrypt the disk, and disable core dumps on servers.
 - ESPN's fantasy API is **unofficial and undocumented**. Reading league data is
   well understood. The write endpoint (lineup, add/drop, waiver claims, trade offers)
   follows the payloads ESPN's own web app sends, but ESPN can change it without notice.
@@ -113,7 +154,8 @@ internal/espn       API client: league/roster/player reads, transactions
 internal/analysis   player valuation: accuracy vs projections, volatility, ROS
 internal/lineup     exact lineup optimizer (Hungarian assignment)
 internal/agent      IR, pickups, matchup strategy, trades, execution, reports
-internal/config     JSON + env configuration
+internal/config     JSON + env configuration (rejects plaintext credentials)
+internal/secrets    encrypted vault, passphrase sources, redacting Secret type
 ```
 
 Run the tests with `go test ./...`.
