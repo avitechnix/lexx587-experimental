@@ -1,0 +1,5 @@
+<strings>
+    <string id="AppName">My Tesla</string>
+    <string id="TokenTitle">Tessie API token</string>
+    <string id="VinTitle">VIN (optional, leave blank for your first car)</string>
+</strings>

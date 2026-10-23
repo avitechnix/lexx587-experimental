@@ -1,0 +1,4 @@
+<properties>
+    <property id="tessieToken" type="string"></property>
+    <property id="vin" type="string"></property>
+</properties>

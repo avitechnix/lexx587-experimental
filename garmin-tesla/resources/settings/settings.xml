@@ -1,0 +1,8 @@
+<settings>
+    <setting propertyKey="@Properties.tessieToken" title="@Strings.TokenTitle">
+        <settingConfig type="alphaNumeric" />
+    </setting>
+    <setting propertyKey="@Properties.vin" title="@Strings.VinTitle">
+        <settingConfig type="alphaNumeric" />
+    </setting>
+</settings>

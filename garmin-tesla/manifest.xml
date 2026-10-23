@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<iq:manifest version="3" xmlns:iq="http://www.garmin.com/xml/connectiq">
+    <iq:application id="6f0d2c1e8b4a4e7f9a3c5d1b2e4f6a80" type="watch-app" name="@Strings.AppName" entry="TeslaApp" launcherIcon="@Drawables.LauncherIcon" minApiLevel="3.2.0">
+        <iq:products>
+            <iq:product id="venu441mm"/>
+            <iq:product id="venu445mm"/>
+        </iq:products>
+        <iq:permissions>
+            <iq:uses-permission id="Communications"/>
+        </iq:permissions>
+        <iq:languages>
+            <iq:language>eng</iq:language>
+        </iq:languages>
+        <iq:barrels/>
+    </iq:application>
+</iq:manifest>
