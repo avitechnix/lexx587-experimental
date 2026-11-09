@@ -3,10 +3,21 @@ My Tesla for Garmin Venu 4
 
 A Connect IQ watch app that controls a Tesla through [Tessie](https://tessie.com).
 
-- **Status screen:** battery % with a bar, range, charging, lock state, climate state and cabin temperature
-- **Controls:** tap the screen. Lock, unlock, climate on/off,
-  open frunk, open/close trunk, honk, flash lights, refresh. Unlock, frunk and trunk ask you to confirm first.
-- **Glance:** shows battery, range and lock state from the last time you opened the app
+- **Home screen:** a battery ring around the edge (green while charging), the percentage, range and
+  cabin temperature, and four quick-action buttons along the bottom:
+
+  | Button  | Tap                   | Press and hold          |
+  |---------|-----------------------|-------------------------|
+  | Lock    | Lock                  | Unlock                  |
+  | Climate | Turn climate on / off | Same as tap             |
+  | Frunk   | Shows a hint          | Open the frunk          |
+  | Trunk   | Shows a hint          | Open or close the trunk |
+
+  Anything that opens the car needs a press and hold, so brushing the screen can't open it.
+  The button for a running command shows a spinner, and buttons light up when something
+  needs attention: orange when unlocked or open, blue while climate is running.
+- **More:** tap anywhere else on the screen, or press the top button, for honk, flash lights and refresh.
+- **Glance:** battery bar, range and lock state from the last time you opened the app.
 
 Distance and temperature follow the units set in the car. Requests go from the watch through the
 Garmin Connect app on your phone to Tessie, so the phone needs to be nearby with Bluetooth on.

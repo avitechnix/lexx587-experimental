@@ -20,7 +20,8 @@ class TeslaApp extends Application.AppBase {
         _car = new Car();
         var car = _car as Car;
         car.refresh();
-        return [new StatusView(car), new StatusDelegate(car)];
+        var view = new StatusView(car);
+        return [view, new StatusDelegate(car, view)];
     }
 
     (:glance)

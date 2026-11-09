@@ -16,6 +16,8 @@ class Car {
     var rangeMiles as Float? = null;
     var locked as Boolean? = null;
     var climateOn as Boolean? = null;
+    var frunkOpen as Boolean = false;
+    var trunkOpen as Boolean = false;
     var insideTempC as Float? = null;
     var chargingState as String? = null;
     var asleep as Boolean = false;
@@ -26,9 +28,10 @@ class Car {
     // One line shown at the bottom of the status screen.
     var message as String? = null;
     var busy as Boolean = false;
+    // The Tessie command in flight, so its button can show progress.
+    var pending as String? = null;
 
-    private var _command as String? = null;
-    private var _commandLabel as String = "";
+    private var _doneMessage as String = "";
     private var _timer as Timer.Timer = new Timer.Timer();
 
     function initialize() {
@@ -60,7 +63,7 @@ class Car {
     }
 
     // command is a Tessie command name, e.g. "lock" or "start_climate".
-    function sendCommand(command as String, label as String) as Void {
+    function sendCommand(command as String) as Void {
         var token = getToken();
         var vin = getVin();
         if (token == null || vin == null) {
@@ -72,10 +75,11 @@ class Car {
             WatchUi.requestUpdate();
             return;
         }
+        var messages = commandMessages(command);
         busy = true;
-        _command = command;
-        _commandLabel = label;
-        message = label + "...";
+        pending = command;
+        _doneMessage = messages[1];
+        message = messages[0] + "...";
         WatchUi.requestUpdate();
 
         // Tessie wakes the car if needed and answers once the command has run.
@@ -117,11 +121,13 @@ class Car {
     }
 
     function onCommand(code as Number, data as Dictionary or String or Null) as Void {
+        var command = pending as String;
         busy = false;
+        pending = null;
         var ok = code == 200 && data instanceof Dictionary && data["result"] == true;
         if (!ok) {
             if (code == 200) {
-                message = _commandLabel + " failed";
+                message = "The car didn't respond";
                 WatchUi.requestUpdate();
             } else {
                 fail(code);
@@ -130,7 +136,6 @@ class Car {
         }
 
         // Show the result right away; Tessie's cached state can lag a few seconds.
-        var command = _command as String;
         if (command.equals("lock")) {
             locked = true;
         } else if (command.equals("unlock")) {
@@ -139,10 +144,14 @@ class Car {
             climateOn = true;
         } else if (command.equals("stop_climate")) {
             climateOn = false;
+        } else if (command.equals("activate_front_trunk")) {
+            frunkOpen = true;
+        } else if (command.equals("activate_rear_trunk")) {
+            trunkOpen = !trunkOpen;
         }
         asleep = false;
         saveSummary();
-        message = _commandLabel + " done";
+        message = _doneMessage;
         WatchUi.requestUpdate();
         _timer.start(method(:refresh), 5000, false);
     }
@@ -171,6 +180,11 @@ class Car {
         if (vehicle instanceof Dictionary) {
             var isLocked = vehicle["locked"];
             locked = isLocked instanceof Boolean ? isLocked : null;
+            // ft and rt are 0 when closed.
+            var ft = toNumber(vehicle["ft"] as Object?);
+            var rt = toNumber(vehicle["rt"] as Object?);
+            frunkOpen = ft != null && ft > 0;
+            trunkOpen = rt != null && rt > 0;
         }
         var gui = state["gui_settings"];
         if (gui instanceof Dictionary) {
@@ -196,6 +210,28 @@ class Car {
             message = "Error " + code;
         }
         WatchUi.requestUpdate();
+    }
+
+    // [in progress, done] wording for the status line.
+    private function commandMessages(command as String) as [String, String] {
+        if (command.equals("lock")) {
+            return ["Locking", "Locked"];
+        } else if (command.equals("unlock")) {
+            return ["Unlocking", "Unlocked"];
+        } else if (command.equals("start_climate")) {
+            return ["Starting climate", "Climate on"];
+        } else if (command.equals("stop_climate")) {
+            return ["Stopping climate", "Climate off"];
+        } else if (command.equals("activate_front_trunk")) {
+            return ["Opening frunk", "Frunk open"];
+        } else if (command.equals("activate_rear_trunk")) {
+            return trunkOpen ? ["Closing trunk", "Trunk closed"] : ["Opening trunk", "Trunk open"];
+        } else if (command.equals("honk")) {
+            return ["Honking", "Honked"];
+        } else if (command.equals("flash")) {
+            return ["Flashing lights", "Lights flashed"];
+        }
+        return ["Sending", "Done"];
     }
 
     function rangeText() as String? {
@@ -224,7 +260,8 @@ class Car {
             "name" => name,
             "battery" => battery,
             "range" => rangeText(),
-            "locked" => locked
+            "locked" => locked,
+            "charging" => "Charging".equals(chargingState)
         });
     }
 
