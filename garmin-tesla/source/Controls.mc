@@ -58,15 +58,24 @@ class StatusDelegate extends WatchUi.BehaviorDelegate {
         return true;
     }
 
-    // The top button.
+    // A screen tap also arrives as Select and a hold as Menu, and those come
+    // first. Declining them lets onTap and onHold see where the touch was;
+    // the physical buttons then reach onKey.
     function onSelect() as Boolean {
-        showMore(_car);
-        return true;
+        return false;
     }
 
     function onMenu() as Boolean {
-        showMore(_car);
-        return true;
+        return false;
+    }
+
+    function onKey(event as WatchUi.KeyEvent) as Boolean {
+        var key = event.getKey();
+        if (key == WatchUi.KEY_ENTER || key == WatchUi.KEY_MENU) {
+            showMore(_car);
+            return true;
+        }
+        return false;
     }
 
     private function run(command as String) as Void {
