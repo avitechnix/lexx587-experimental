@@ -41,10 +41,10 @@ class StatusView extends WatchUi.View {
     function onLayout(dc as Graphics.Dc) as Void {
         var w = dc.getWidth();
         var h = dc.getHeight();
-        _buttonR = w * 8 / 100;
+        _buttonR = w * 85 / 1000;
         // Outer buttons sit a little higher, following the round edge.
-        var xs = [w * 215 / 1000, w * 405 / 1000, w * 595 / 1000, w * 785 / 1000];
-        var ys = [h * 635 / 1000, h * 66 / 100, h * 66 / 100, h * 635 / 1000];
+        var xs = [w * 20 / 100, w * 40 / 100, w * 60 / 100, w * 80 / 100];
+        var ys = [h * 655 / 1000, h * 68 / 100, h * 68 / 100, h * 655 / 1000];
         for (var i = 0; i < 4; i++) {
             _buttonX[i] = xs[i];
             _buttonY[i] = ys[i];
@@ -95,29 +95,68 @@ class StatusView extends WatchUi.View {
         var charging = "Charging".equals(_car.chargingState);
         drawBatteryRing(dc, battery, charging);
 
-        dc.setColor(GRAY, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(cx, h * 14 / 100, Graphics.FONT_XTINY, _car.name.toUpper(),
-            Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
-
-        drawBattery(dc, cx, h * 285 / 1000, battery, charging);
-
-        var range = _car.rangeText();
-        dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(cx, h * 41 / 100, Graphics.FONT_SMALL, range == null ? "--" : range,
-            Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
-
-        var temp = _car.insideTempText();
-        if (temp != null) {
-            dc.setColor(GRAY, Graphics.COLOR_TRANSPARENT);
-            dc.drawText(cx, h * 48 / 100, Graphics.FONT_XTINY, "Inside " + temp,
-                Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
-        }
+        drawInfo(dc, battery, charging);
 
         for (var i = 0; i < 4; i++) {
             drawButton(dc, i);
         }
 
-        drawFooter(dc, cx, h * 875 / 1000);
+        // Just below the buttons, but no higher than where the screen is wide enough.
+        var footerFont = Graphics.FONT_XTINY;
+        var footerY = _buttonY[1] + _buttonR + dc.getFontHeight(footerFont) * 3 / 4;
+        drawFooter(dc, cx, footerY > h * 86 / 100 ? footerY : h * 86 / 100, footerFont);
+    }
+
+    // Name, battery, range and cabin temperature, stacked and centered in the
+    // space above the buttons. Measured with the watch's own fonts, stepping
+    // the battery digits down a size if they would not fit.
+    private function drawInfo(dc as Graphics.Dc, battery as Number?, charging as Boolean) as Void {
+        var h = dc.getHeight();
+        var cx = dc.getWidth() / 2;
+        var top = h * 9 / 100;
+        var bottom = _buttonY[0] - _buttonR - h * 2 / 100;
+
+        var temp = _car.insideTempText();
+        var nameH = dc.getFontHeight(Graphics.FONT_XTINY);
+        var rangeH = dc.getFontHeight(Graphics.FONT_SMALL);
+        var tempH = temp != null ? dc.getFontHeight(Graphics.FONT_XTINY) : 0;
+
+        var bigFonts = [Graphics.FONT_NUMBER_MEDIUM, Graphics.FONT_NUMBER_MILD, Graphics.FONT_LARGE];
+        var bigFont = Graphics.FONT_LARGE;
+        var bigH = 0;
+        for (var i = 0; i < bigFonts.size(); i++) {
+            bigFont = bigFonts[i];
+            // Number fonts carry padding above and below the digits.
+            bigH = dc.getFontHeight(bigFont) * (i < 2 ? 78 : 100) / 100;
+            if (nameH + bigH + rangeH + tempH <= bottom - top) {
+                break;
+            }
+        }
+
+        var y = top + (bottom - top - (nameH + bigH + rangeH + tempH)) / 2;
+        if (y < top) {
+            y = top;
+        }
+        y += nameH / 2;
+        dc.setColor(GRAY, Graphics.COLOR_TRANSPARENT);
+        dc.drawText(cx, y, Graphics.FONT_XTINY, _car.name.toUpper(),
+            Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+
+        y += nameH / 2 + bigH / 2;
+        drawBattery(dc, cx, y, bigFont, bigH, battery, charging);
+
+        y += bigH / 2 + rangeH / 2;
+        var range = _car.rangeText();
+        dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
+        dc.drawText(cx, y, Graphics.FONT_SMALL, range == null ? "--" : range,
+            Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+
+        if (temp != null) {
+            y += rangeH / 2 + tempH / 2;
+            dc.setColor(GRAY, Graphics.COLOR_TRANSPARENT);
+            dc.drawText(cx, y, Graphics.FONT_XTINY, "Inside " + temp,
+                Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+        }
     }
 
     private function drawBatteryRing(dc as Graphics.Dc, battery as Number?, charging as Boolean) as Void {
@@ -156,9 +195,10 @@ class StatusView extends WatchUi.View {
     }
 
     // The percentage in large digits, with a smaller % sign and a bolt while charging.
-    private function drawBattery(dc as Graphics.Dc, cx as Number, y as Number, battery as Number?, charging as Boolean) as Void {
+    // digitsH is the height of the digits themselves, without the font's padding.
+    private function drawBattery(dc as Graphics.Dc, cx as Number, y as Number, bigFont as Graphics.FontType,
+            digitsH as Number, battery as Number?, charging as Boolean) as Void {
         var digits = battery == null ? "--" : battery.toString();
-        var bigFont = Graphics.FONT_NUMBER_MEDIUM;
         var smallFont = Graphics.FONT_SMALL;
         var digitsW = dc.getTextWidthInPixels(digits, bigFont);
         var pctW = dc.getTextWidthInPixels("%", smallFont);
@@ -167,7 +207,8 @@ class StatusView extends WatchUi.View {
         dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
         dc.drawText(left, y, bigFont, digits, Graphics.TEXT_JUSTIFY_LEFT | Graphics.TEXT_JUSTIFY_VCENTER);
         dc.setColor(GRAY, Graphics.COLOR_TRANSPARENT);
-        var pctY = y - dc.getFontHeight(bigFont) / 5;
+        // Top-aligned with the digits.
+        var pctY = y - digitsH / 2 + dc.getFontHeight(smallFont) * 2 / 5;
         dc.drawText(left + digitsW + 2, pctY, smallFont, "%", Graphics.TEXT_JUSTIFY_LEFT | Graphics.TEXT_JUSTIFY_VCENTER);
 
         if (charging) {
@@ -184,9 +225,10 @@ class StatusView extends WatchUi.View {
         var iconSize = r;
 
         // A filled color means "needs attention or running"; dark means idle.
+        // The buttons carry no text labels: four would not fit across a round
+        // screen, and tapping one names its action in the footer.
         var fill = BUTTON;
         var iconColor = Graphics.COLOR_WHITE;
-        var label = "";
         var commands = [] as Array<String>;
 
         if (button == BUTTON_LOCK) {
@@ -194,36 +236,25 @@ class StatusView extends WatchUi.View {
             if (locked == false) {
                 fill = ORANGE;
                 iconColor = Graphics.COLOR_BLACK;
-                label = "Unlocked";
-            } else {
-                iconColor = locked == true ? GREEN : Graphics.COLOR_WHITE;
-                label = locked == true ? "Locked" : "Lock";
+            } else if (locked == true) {
+                iconColor = GREEN;
             }
             commands = ["lock", "unlock"];
         } else if (button == BUTTON_CLIMATE) {
             if (_car.climateOn == true) {
                 fill = BLUE;
-                label = "On";
-            } else {
-                label = "Climate";
             }
             commands = ["start_climate", "stop_climate"];
         } else if (button == BUTTON_FRUNK) {
             if (_car.frunkOpen) {
                 fill = ORANGE;
                 iconColor = Graphics.COLOR_BLACK;
-                label = "Open";
-            } else {
-                label = "Frunk";
             }
             commands = ["activate_front_trunk"];
         } else {
             if (_car.trunkOpen) {
                 fill = ORANGE;
                 iconColor = Graphics.COLOR_BLACK;
-                label = "Open";
-            } else {
-                label = "Trunk";
             }
             commands = ["activate_rear_trunk"];
         }
@@ -254,13 +285,9 @@ class StatusView extends WatchUi.View {
             dc.drawArc(x, y, r + pen, Graphics.ARC_CLOCKWISE, (360 - _spin) % 360, (270 - _spin + 360) % 360);
             dc.setPenWidth(1);
         }
-
-        dc.setColor(GRAY, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(x, y + r + dc.getFontHeight(Graphics.FONT_XTINY) * 3 / 5, Graphics.FONT_XTINY, label,
-            Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
     }
 
-    private function drawFooter(dc as Graphics.Dc, cx as Number, y as Number) as Void {
+    private function drawFooter(dc as Graphics.Dc, cx as Number, y as Number, font as Graphics.FontType) as Void {
         var text = _car.message;
         var color = Graphics.COLOR_WHITE;
         if (text == null) {
@@ -273,16 +300,20 @@ class StatusView extends WatchUi.View {
                 if (updatedAt != null) {
                     var minutes = (Time.now().value() - updatedAt) / 60;
                     if (minutes > 0) {
-                        text = minutes + " min ago";
+                        text = "Updated " + minutes + " min ago";
                     }
                 }
             }
         }
-        // The screen narrows toward the bottom, so long messages wrap and shrink.
-        var font = Graphics.FONT_XTINY;
-        var maxW = dc.getWidth() * 56 / 100;
+        // One line, as wide as the round screen allows at this height.
+        var half = dc.getWidth() / 2;
+        var dy = y - dc.getHeight() / 2;
+        var maxW = Math.sqrt(half * half - dy * dy).toNumber() * 2 * 85 / 100;
         if (dc.getTextWidthInPixels(text, font) > maxW) {
-            text = Graphics.fitTextToArea(text, font, maxW, dc.getFontHeight(font) * 2, true);
+            var fitted = Graphics.fitTextToArea(text, font, maxW, dc.getFontHeight(font), true);
+            if (fitted != null && fitted.length() > 0) {
+                text = fitted;
+            }
         }
         dc.setColor(color, Graphics.COLOR_TRANSPARENT);
         dc.drawText(cx, y, font, text, Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);

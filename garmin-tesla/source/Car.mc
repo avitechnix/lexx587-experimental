@@ -44,7 +44,7 @@ class Car {
         }
         var token = getToken();
         if (token == null) {
-            message = "Add your Tessie token in the Garmin Connect app";
+            message = "No Tessie token";
             WatchUi.requestUpdate();
             return;
         }
@@ -71,7 +71,7 @@ class Car {
             return;
         }
         if (busy) {
-            message = "Busy, try again";
+            message = "Busy";
             WatchUi.requestUpdate();
             return;
         }
@@ -95,7 +95,7 @@ class Car {
         }
         var results = data["results"];
         if (!(results instanceof Array) || results.size() == 0) {
-            message = "No cars found in your Tessie account";
+            message = "No car in Tessie";
             WatchUi.requestUpdate();
             return;
         }
@@ -127,7 +127,7 @@ class Car {
         var ok = code == 200 && data instanceof Dictionary && data["result"] == true;
         if (!ok) {
             if (code == 200) {
-                message = "The car didn't respond";
+                message = "No response";
                 WatchUi.requestUpdate();
             } else {
                 fail(code);
@@ -197,15 +197,15 @@ class Car {
 
     private function fail(code as Number) as Void {
         if (code == 401 || code == 403) {
-            message = "Tessie rejected the token";
+            message = "Token rejected";
         } else if (code == 404) {
-            message = "Car not found, check the VIN";
+            message = "Car not found";
         } else if (code == Communications.BLE_CONNECTION_UNAVAILABLE) {
             message = "Phone not connected";
         } else if (code == Communications.NETWORK_REQUEST_TIMED_OUT || code == Communications.BLE_HOST_TIMEOUT || code == 408) {
-            message = "Timed out, the car may be asleep";
+            message = "Timed out";
         } else if (code == Communications.NETWORK_RESPONSE_TOO_LARGE || code == Communications.NETWORK_RESPONSE_OUT_OF_MEMORY) {
-            message = "Response too large for the watch";
+            message = "Too much data";
         } else {
             message = "Error " + code;
         }

@@ -6,16 +6,17 @@ A Connect IQ watch app that controls a Tesla through [Tessie](https://tessie.com
 - **Home screen:** a battery ring around the edge (green while charging), the percentage, range and
   cabin temperature, and four quick-action buttons along the bottom:
 
-  | Button  | Tap                   | Press and hold          |
-  |---------|-----------------------|-------------------------|
-  | Lock    | Lock                  | Unlock                  |
-  | Climate | Turn climate on / off | Same as tap             |
-  | Frunk   | Shows a hint          | Open the frunk          |
-  | Trunk   | Shows a hint          | Open or close the trunk |
+  | Icon                     | Tap                   | Press and hold          |
+  |--------------------------|-----------------------|-------------------------|
+  | Padlock                  | Lock                  | Unlock                  |
+  | Fan                      | Turn climate on / off | Same as tap             |
+  | Car, front lid filled in | Shows a hint          | Open the frunk          |
+  | Car, rear lid filled in  | Shows a hint          | Open or close the trunk |
 
   Anything that opens the car needs a press and hold, so brushing the screen can't open it.
   The button for a running command shows a spinner, and buttons light up when something
-  needs attention: orange when unlocked or open, blue while climate is running.
+  needs attention: orange when unlocked or open, blue while climate is running. The line at the
+  bottom says what a tapped button is doing, or how long ago the status was updated.
 - **More:** tap anywhere else on the screen, or press the top button, for honk, flash lights and refresh.
 - **Glance:** battery bar, range and lock state from the last time you opened the app.
 

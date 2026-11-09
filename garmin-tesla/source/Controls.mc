@@ -28,7 +28,7 @@ class StatusDelegate extends WatchUi.BehaviorDelegate {
         } else if (button == StatusView.BUTTON_CLIMATE) {
             run(_car.climateOn == true ? "stop_climate" : "start_climate");
         } else if (button == StatusView.BUTTON_FRUNK) {
-            hint(_car.frunkOpen ? "Close the frunk by hand" : "Hold to open frunk");
+            hint(_car.frunkOpen ? "Close by hand" : "Hold to open frunk");
         } else if (button == StatusView.BUTTON_TRUNK) {
             hint(_car.trunkOpen ? "Hold to close trunk" : "Hold to open trunk");
         } else {
@@ -46,7 +46,7 @@ class StatusDelegate extends WatchUi.BehaviorDelegate {
             run(_car.climateOn == true ? "stop_climate" : "start_climate");
         } else if (button == StatusView.BUTTON_FRUNK) {
             if (_car.frunkOpen) {
-                hint("Close the frunk by hand");
+                hint("Close by hand");
             } else {
                 run("activate_front_trunk");
             }
